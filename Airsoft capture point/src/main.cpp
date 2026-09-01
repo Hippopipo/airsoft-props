@@ -63,6 +63,54 @@ const int EEPROM_MAGIC_ADDR = 0;
 const uint8_t EEPROM_MAGIC_VAL = 0xA5;
 const int EEPROM_CAPTURE_TIME_ADDR = 1; // 1 byte: seconds
 const int EEPROM_PIN_ADDR = 2;          // 4 bytes: ASCII digits
+const int EEPROM_LANG_ADDR = 6;         // 1 byte: Lang enum value
+
+// ---------------------------------------------------------------------------
+// Language / on-screen text
+//
+// The HD44780 controller's built-in character ROM doesn't reliably include
+// Finnish ä/ö at normal ASCII positions, so Finnish strings intentionally
+// drop the umlaut dots (e.g. "virittää" -> "virita") rather than risk
+// garbled glyphs on hardware using the common "A00" ROM.
+// ---------------------------------------------------------------------------
+
+enum Lang { LANG_EN, LANG_FI };
+Lang currentLang = LANG_EN;
+
+enum StrId {
+  STR_HINT_SETTINGS,
+  STR_CAPTURING_FMT,
+  STR_ENTER_PIN,
+  STR_MENU_LINE0,
+  STR_MENU_LINE1,
+  STR_SET_TIME_TITLE,
+  STR_SET_TIME_HINT,
+  STR_COUNT
+};
+
+const char *const STRINGS_EN[STR_COUNT] = {
+  "* for settings",
+  "Capturing %c %3d%%",
+  "Enter admin PIN:",
+  "1)Time 2)Reset",
+  "3)Lang #/*=Exit",
+  "Capture time (s)",
+  "1-60, # to save"
+};
+
+const char *const STRINGS_FI[STR_COUNT] = {
+  "* asetukset",
+  "Vallataan %c %3d%%",
+  "Anna PIN-koodi:",
+  "1)Aika 2)Nollaa",
+  "3)Kieli #/*=pois",
+  "Valtausaika (s)",
+  "1-60, # tallenna"
+};
+
+const char *tr(StrId id) {
+  return (currentLang == LANG_FI) ? STRINGS_FI[id] : STRINGS_EN[id];
+}
 
 // ---------------------------------------------------------------------------
 // Globals
@@ -117,12 +165,14 @@ void saveSettings() {
   for (uint8_t i = 0; i < 4; i++) {
     EEPROM.update(EEPROM_PIN_ADDR + i, adminPin[i]);
   }
+  EEPROM.update(EEPROM_LANG_ADDR, (uint8_t)currentLang);
 }
 
 void loadSettings() {
   if (EEPROM.read(EEPROM_MAGIC_ADDR) != EEPROM_MAGIC_VAL) {
     captureTimeMs = DEFAULT_CAPTURE_SECONDS * 1000UL;
     memcpy(adminPin, DEFAULT_PIN, 5);
+    currentLang = LANG_EN;
     saveSettings();
     return;
   }
@@ -138,6 +188,9 @@ void loadSettings() {
     adminPin[i] = (c >= '0' && c <= '9') ? c : DEFAULT_PIN[i];
   }
   adminPin[4] = '\0';
+
+  uint8_t lang = EEPROM.read(EEPROM_LANG_ADDR);
+  currentLang = (lang == LANG_FI) ? LANG_FI : LANG_EN;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,11 +290,10 @@ void updateProgressBuzzer() {
 // ---------------------------------------------------------------------------
 
 void printPadded(const char *text, uint8_t width) {
-  uint8_t len = strlen(text);
-  lcd.print(text);
-  for (uint8_t i = len; i < width; i++) {
-    lcd.print(' ');
-  }
+  if (width > 16) width = 16;
+  char buf[17];
+  snprintf(buf, sizeof(buf), "%-*.*s", width, width, text);
+  lcd.print(buf);
 }
 
 void renderScoreboard() {
@@ -256,11 +308,11 @@ void renderScoreboard() {
   if (progA > 0 && progB > 0) {
     snprintf(line2, sizeof(line2), "A:%3d%% B:%3d%%", progA, progB);
   } else if (progA > 0) {
-    snprintf(line2, sizeof(line2), "Capturing A %3d%%", progA);
+    snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), 'A', progA);
   } else if (progB > 0) {
-    snprintf(line2, sizeof(line2), "Capturing B %3d%%", progB);
+    snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), 'B', progB);
   } else {
-    snprintf(line2, sizeof(line2), "* for settings");
+    snprintf(line2, sizeof(line2), "%s", tr(STR_HINT_SETTINGS));
   }
   lcd.setCursor(0, 1);
   printPadded(line2, 16);
@@ -268,7 +320,7 @@ void renderScoreboard() {
 
 void renderEnterPin() {
   lcd.setCursor(0, 0);
-  printPadded("Enter admin PIN:", 16);
+  printPadded(tr(STR_ENTER_PIN), 16);
   char masked[5] = "";
   for (uint8_t i = 0; i < entryLen; i++) masked[i] = '*';
   masked[entryLen] = '\0';
@@ -278,16 +330,16 @@ void renderEnterPin() {
 
 void renderMenu() {
   lcd.setCursor(0, 0);
-  printPadded("1)Time 2)Reset", 16);
+  printPadded(tr(STR_MENU_LINE0), 16);
   lcd.setCursor(0, 1);
-  printPadded("# Exit  * Cancel", 16);
+  printPadded(tr(STR_MENU_LINE1), 16);
 }
 
 void renderSetCaptureTime() {
   lcd.setCursor(0, 0);
-  printPadded("Capture secs 1-60:", 16);
+  printPadded(tr(STR_SET_TIME_TITLE), 16);
   lcd.setCursor(0, 1);
-  printPadded(entryLen ? entryBuffer : "(# to save)", 16);
+  printPadded(entryLen ? entryBuffer : tr(STR_SET_TIME_HINT), 16);
 }
 
 void render() {
@@ -339,6 +391,10 @@ void handleKey(char key) {
         enterState(STATE_SET_CAPTURE_TIME);
       } else if (key == '2') {
         resetScores();
+        lcdNeedsRedraw = true;
+      } else if (key == '3') {
+        currentLang = (currentLang == LANG_EN) ? LANG_FI : LANG_EN;
+        saveSettings();
         lcdNeedsRedraw = true;
       } else if (key == '#' || key == '*') {
         enterState(STATE_SCOREBOARD);

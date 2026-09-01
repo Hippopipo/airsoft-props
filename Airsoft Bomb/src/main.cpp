@@ -75,6 +75,102 @@ const int EEPROM_COUNTDOWN_ADDR = 1;   // 2 bytes: uint16_t seconds
 const int EEPROM_ARM_CODE_ADDR = 3;    // 4 bytes
 const int EEPROM_DEFUSE_CODE_ADDR = 7; // 4 bytes
 const int EEPROM_ADMIN_PIN_ADDR = 11;  // 4 bytes
+const int EEPROM_LANG_ADDR = 15;       // 1 byte: Lang enum value
+
+// ---------------------------------------------------------------------------
+// Language / on-screen text
+//
+// The HD44780 controller's built-in character ROM doesn't reliably include
+// Finnish ä/ö at normal ASCII positions, so Finnish strings intentionally
+// drop the umlaut dots (e.g. "virittää" -> "virita", "räjähti" -> "rajahti")
+// rather than risk garbled glyphs on hardware using the common "A00" ROM.
+// ---------------------------------------------------------------------------
+
+enum Lang { LANG_EN, LANG_FI };
+Lang currentLang = LANG_EN;
+
+enum StrId {
+  STR_BOMB_SAFE,
+  STR_ENTER_ARM_CODE,
+  STR_HINT_SETTINGS,
+  STR_ARMED_TITLE,
+  STR_TIME_FMT,
+  STR_ENTER_DEFUSE_CODE,
+  STR_HINT_DEFUSE_CLEAR,
+  STR_DEFUSED_TITLE,
+  STR_BOOM_TITLE,
+  STR_BOOM_SUBTITLE,
+  STR_ENTER_PIN,
+  STR_HINT_PIN_CONFIRM_BACK,
+  STR_MENU_LINE0,
+  STR_MENU_LINE1,
+  STR_MENU_LINE2,
+  STR_MENU_LINE3,
+  STR_SET_TIME_TITLE,
+  STR_RANGE_FMT,
+  STR_HINT_SAVE_CANCEL,
+  STR_SET_ARM_TITLE,
+  STR_SET_DEFUSE_TITLE,
+  STR_ENTER_4_DIGITS,
+  STR_WRONG_CODE,
+  STR_COUNT
+};
+
+const char *const STRINGS_EN[STR_COUNT] = {
+  "BOMB: UNARMED",
+  "Enter arm code:",
+  "* = settings",
+  "*** ARMED ***",
+  "Time: %s",
+  "Defuse code:",
+  "#=defuse *=clear",
+  "*** DEFUSED ***",
+  "!!!! BOOM !!!!",
+  "Bomb exploded",
+  "Enter admin PIN:",
+  "#=OK  *=back",
+  "1)Timer",
+  "2)ArmCode",
+  "3)DefuseCode",
+  "4)Lang  #/*=Exit",
+  "Set timer (sec)",
+  "Range %d-%d",
+  "#=save *=cancel",
+  "Arm code:",
+  "Defuse code:",
+  "Enter 4 digits:",
+  "Wrong code"
+};
+
+const char *const STRINGS_FI[STR_COUNT] = {
+  "POMMI: EI VIRITETTY",
+  "Syota viritys koodi:",
+  "* = asetukset",
+  "** VIRITETTY **",
+  "Aika: %s",
+  "Purkukoodi:",
+  "#=pura *=tyhjenna",
+  "*** PURETTU ***",
+  "!!!! PAM !!!!",
+  "Pommi rajahti",
+  "Anna PIN-koodi:",
+  "#=OK  *=takaisin",
+  "1)Ajastin",
+  "2)Virityskoodi",
+  "3)Purkukoodi",
+  "4)Kieli #/*=pois",
+  "Aseta ajastin",
+  "Alue %d-%d",
+  "#=tallenna*=peru",
+  "Virityskoodi:",
+  "Purkukoodi:",
+  "Anna 4 numeroa:",
+  "Virheellinen koodi"
+};
+
+const char *tr(StrId id) {
+  return (currentLang == LANG_FI) ? STRINGS_FI[id] : STRINGS_EN[id];
+}
 
 // ---------------------------------------------------------------------------
 // Globals
@@ -134,6 +230,7 @@ void saveSettings() {
   for (uint8_t i = 0; i < 4; i++) EEPROM.update(EEPROM_ARM_CODE_ADDR + i, armCode[i]);
   for (uint8_t i = 0; i < 4; i++) EEPROM.update(EEPROM_DEFUSE_CODE_ADDR + i, defuseCode[i]);
   for (uint8_t i = 0; i < 4; i++) EEPROM.update(EEPROM_ADMIN_PIN_ADDR + i, adminPin[i]);
+  EEPROM.update(EEPROM_LANG_ADDR, (uint8_t)currentLang);
 }
 
 void loadSettings() {
@@ -142,6 +239,7 @@ void loadSettings() {
     memcpy(armCode, DEFAULT_ARM_CODE, 5);
     memcpy(defuseCode, DEFAULT_DEFUSE_CODE, 5);
     memcpy(adminPin, DEFAULT_ADMIN_PIN, 5);
+    currentLang = LANG_EN;
     saveSettings();
     return;
   }
@@ -170,6 +268,9 @@ void loadSettings() {
     adminPin[i] = (c >= '0' && c <= '9') ? c : DEFAULT_ADMIN_PIN[i];
   }
   adminPin[4] = '\0';
+
+  uint8_t lang = EEPROM.read(EEPROM_LANG_ADDR);
+  currentLang = (lang == LANG_FI) ? LANG_FI : LANG_EN;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,86 +434,86 @@ void updateExploded() {
 // ---------------------------------------------------------------------------
 
 void renderIdle() {
-  printLine(0, "BOMB: SAFE");
-  printLine(1, transientActive() ? transientMsg : "Enter arm code:");
+  printLine(0, tr(STR_BOMB_SAFE));
+  printLine(1, transientActive() ? transientMsg : tr(STR_ENTER_ARM_CODE));
   char masked[5];
   maskedEntry(masked, sizeof(masked));
   printLine(2, masked);
-  printLine(3, "* = settings");
+  printLine(3, tr(STR_HINT_SETTINGS));
 }
 
 void renderArmed() {
-  printLine(0, "*** ARMED ***");
+  printLine(0, tr(STR_ARMED_TITLE));
   char timeStr[6];
   formatMMSS(armedRemainingMs, timeStr, sizeof(timeStr));
   if (transientActive()) {
     printLine(1, transientMsg);
   } else {
     char line1[17];
-    snprintf(line1, sizeof(line1), "Time left %s", timeStr);
+    snprintf(line1, sizeof(line1), tr(STR_TIME_FMT), timeStr);
     printLine(1, line1);
   }
   char masked[5];
   maskedEntry(masked, sizeof(masked));
-  printLine(2, entryLen > 0 ? masked : "Enter defuse code");
-  printLine(3, "# defuse  * clear");
+  printLine(2, entryLen > 0 ? masked : tr(STR_ENTER_DEFUSE_CODE));
+  printLine(3, tr(STR_HINT_DEFUSE_CLEAR));
 }
 
 void renderDefused() {
-  printLine(0, "*** DEFUSED ***");
+  printLine(0, tr(STR_DEFUSED_TITLE));
   char timeStr[6];
   formatMMSS(defusedRemainingMs, timeStr, sizeof(timeStr));
   char line1[17];
-  snprintf(line1, sizeof(line1), "Left: %s", timeStr);
+  snprintf(line1, sizeof(line1), tr(STR_TIME_FMT), timeStr);
   printLine(1, line1);
   printLine(2, "");
-  printLine(3, "* = settings");
+  printLine(3, tr(STR_HINT_SETTINGS));
 }
 
 void renderExploded() {
-  printLine(0, "!!!! BOOM !!!!");
-  printLine(1, "Bomb exploded");
+  printLine(0, tr(STR_BOOM_TITLE));
+  printLine(1, tr(STR_BOOM_SUBTITLE));
   printLine(2, "");
-  printLine(3, "* = settings");
+  printLine(3, tr(STR_HINT_SETTINGS));
 }
 
 void renderEnterAdminPin() {
-  printLine(0, "Enter admin PIN:");
+  printLine(0, tr(STR_ENTER_PIN));
   char masked[5];
   maskedEntry(masked, sizeof(masked));
   printLine(1, masked);
   printLine(2, "");
-  printLine(3, "# confirm  * back");
+  printLine(3, tr(STR_HINT_PIN_CONFIRM_BACK));
 }
 
 void renderMenu() {
-  printLine(0, "1)Timer 2)ArmCode");
-  printLine(1, "3)DefuseCode");
-  printLine(2, "");
-  printLine(3, "# or * = exit");
+  printLine(0, tr(STR_MENU_LINE0));
+  printLine(1, tr(STR_MENU_LINE1));
+  printLine(2, tr(STR_MENU_LINE2));
+  printLine(3, tr(STR_MENU_LINE3));
 }
 
 void renderSetTime() {
-  printLine(0, "Set timer (secs)");
+  printLine(0, tr(STR_SET_TIME_TITLE));
   char range[17];
-  snprintf(range, sizeof(range), "Range %d-%d", MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS);
+  snprintf(range, sizeof(range), tr(STR_RANGE_FMT), MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS);
   printLine(1, range);
-  printLine(2, entryLen > 0 ? entryBuffer : "(# save * cancel)");
+  printLine(2, entryLen > 0 ? entryBuffer : tr(STR_HINT_SAVE_CANCEL));
   printLine(3, "");
 }
 
 void renderSetArmCode() {
-  printLine(0, "Set arm code");
-  printLine(1, "Enter 4 digits:");
+  printLine(0, tr(STR_SET_ARM_TITLE));
+  printLine(1, tr(STR_ENTER_4_DIGITS));
   printLine(2, entryBuffer);
-  printLine(3, "# save   * cancel");
+  printLine(3, tr(STR_HINT_SAVE_CANCEL));
 }
 
 void renderSetDefuseCode() {
-  printLine(0, "Set defuse code");
-  printLine(1, "Enter 4 digits:");
+  printLine(0, tr(STR_SET_DEFUSE_TITLE));
+  printLine(1, tr(STR_ENTER_4_DIGITS));
   printLine(2, entryBuffer);
-  printLine(3, "# save   * cancel");
+  printLine(3, tr(STR_HINT_SAVE_CANCEL));
 }
 
 void render() {
@@ -447,7 +548,7 @@ void handleKey(char key) {
           enterArmed();
         } else {
           tone(BUZZER_PIN, BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
-          showTransient("Wrong code");
+          showTransient(tr(STR_WRONG_CODE));
         }
       } else if (key == '*') {
         if (entryLen > 0) {
@@ -472,7 +573,7 @@ void handleKey(char key) {
           enterDefused();
         } else {
           tone(BUZZER_PIN, BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
-          showTransient("Wrong code");
+          showTransient(tr(STR_WRONG_CODE));
         }
       } else if (key == '*') {
         entryLen = 0;
@@ -514,6 +615,10 @@ void handleKey(char key) {
         appState = STATE_SET_ARM_CODE; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
       } else if (key == '3') {
         appState = STATE_SET_DEFUSE_CODE; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
+      } else if (key == '4') {
+        currentLang = (currentLang == LANG_EN) ? LANG_FI : LANG_EN;
+        saveSettings();
+        lcdNeedsRedraw = true;
       } else if (key == '#' || key == '*') {
         saveSettings();
         enterIdle();
