@@ -143,13 +143,13 @@ const char *const STRINGS_EN[STR_COUNT] = {
 };
 
 const char *const STRINGS_FI[STR_COUNT] = {
-  "POMMI: EI VIRITETTY",
-  "Syota viritys koodi:",
+  "POMMI: TURVATILA",
+  "Virita koodilla:",
   "* = asetukset",
   "** VIRITETTY **",
   "Aika: %s",
   "Purkukoodi:",
-  "#=pura *=tyhjenna",
+  "#=pura *=poista",
   "*** PURETTU ***",
   "!!!! PAM !!!!",
   "Pommi rajahti",
@@ -165,7 +165,7 @@ const char *const STRINGS_FI[STR_COUNT] = {
   "Virityskoodi:",
   "Purkukoodi:",
   "Anna 4 numeroa:",
-  "Virheellinen koodi"
+  "Vaara koodi"
 };
 
 const char *tr(StrId id) {
