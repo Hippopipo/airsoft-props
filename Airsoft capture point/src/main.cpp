@@ -49,11 +49,17 @@ const int MAX_CAPTURE_SECONDS = 60;
 const int DEFAULT_CAPTURE_SECONDS = 5;
 const char *DEFAULT_PIN = "1234";
 
+const int MIN_GOAL_SCORE = 1;
+const int MAX_GOAL_SCORE = 99;
+const int DEFAULT_GOAL_SCORE = 5; // first team to this many captures wins
+
 // Buzzer tones
 const unsigned int BEEP_FREQ_PROGRESS = 1000;
 const unsigned int BEEP_DURATION_PROGRESS_MS = 60;
 const unsigned int BEEP_FREQ_CAPTURED = 2000;
 const unsigned int BEEP_DURATION_CAPTURED_MS = 450;
+const unsigned int BEEP_FREQ_WIN = 2600;
+const unsigned int BEEP_DURATION_WIN_MS = 700;
 
 // ---------------------------------------------------------------------------
 // EEPROM layout
@@ -64,6 +70,7 @@ const uint8_t EEPROM_MAGIC_VAL = 0xA5;
 const int EEPROM_CAPTURE_TIME_ADDR = 1; // 1 byte: seconds
 const int EEPROM_PIN_ADDR = 2;          // 4 bytes: ASCII digits
 const int EEPROM_LANG_ADDR = 6;         // 1 byte: Lang enum value
+const int EEPROM_GOAL_ADDR = 7;         // 1 byte: goal score
 
 // ---------------------------------------------------------------------------
 // Language / on-screen text
@@ -80,32 +87,41 @@ Lang currentLang = LANG_EN;
 enum StrId {
   STR_HINT_SETTINGS,
   STR_CAPTURING_FMT,
+  STR_WIN_FMT,
   STR_ENTER_PIN,
   STR_MENU_LINE0,
   STR_MENU_LINE1,
   STR_SET_TIME_TITLE,
   STR_SET_TIME_HINT,
+  STR_SET_GOAL_TITLE,
+  STR_SET_GOAL_HINT,
   STR_COUNT
 };
 
 const char *const STRINGS_EN[STR_COUNT] = {
   "* for settings",
   "Capturing %c %3d%%",
+  "Team %c WINS!",
   "Enter admin PIN:",
   "1)Time 2)Reset",
-  "3)Lang #/*=Exit",
+  "3)Goal 4)Lang",
   "Capture time (s)",
-  "1-60, # to save"
+  "1-60, # to save",
+  "Goal score (pts)",
+  "1-99, # to save"
 };
 
 const char *const STRINGS_FI[STR_COUNT] = {
   "* asetukset",
   "Vallataan %c %3d%%",
+  "Tiimi %c voitti!",
   "Anna PIN-koodi:",
   "1)Aika 2)Nollaa",
-  "3)Kieli #/*=pois",
+  "3)Maali 4)Kieli",
   "Valtausaika (s)",
-  "1-60, # tallenna"
+  "1-60, # tallenna",
+  "Maalitavoite:",
+  "1-99, # tallenna"
 };
 
 const char *tr(StrId id) {
@@ -121,6 +137,10 @@ Keypad keypad = Keypad(makeKeymap(keypadKeys), keypadRowPins, keypadColPins, KEY
 
 unsigned long captureTimeMs = DEFAULT_CAPTURE_SECONDS * 1000UL;
 char adminPin[5] = "1234"; // 4 digits + null terminator
+int goalScore = DEFAULT_GOAL_SCORE;
+
+bool gameOver = false;
+char winnerLetter = '\0';
 
 struct Team {
   uint8_t buttonPin;
@@ -145,7 +165,8 @@ enum AppState {
   STATE_SCOREBOARD,
   STATE_ENTER_PIN,
   STATE_MENU,
-  STATE_SET_CAPTURE_TIME
+  STATE_SET_CAPTURE_TIME,
+  STATE_SET_GOAL
 };
 
 AppState appState = STATE_SCOREBOARD;
@@ -166,6 +187,7 @@ void saveSettings() {
     EEPROM.update(EEPROM_PIN_ADDR + i, adminPin[i]);
   }
   EEPROM.update(EEPROM_LANG_ADDR, (uint8_t)currentLang);
+  EEPROM.update(EEPROM_GOAL_ADDR, (uint8_t)goalScore);
 }
 
 void loadSettings() {
@@ -173,6 +195,7 @@ void loadSettings() {
     captureTimeMs = DEFAULT_CAPTURE_SECONDS * 1000UL;
     memcpy(adminPin, DEFAULT_PIN, 5);
     currentLang = LANG_EN;
+    goalScore = DEFAULT_GOAL_SCORE;
     saveSettings();
     return;
   }
@@ -191,6 +214,9 @@ void loadSettings() {
 
   uint8_t lang = EEPROM.read(EEPROM_LANG_ADDR);
   currentLang = (lang == LANG_FI) ? LANG_FI : LANG_EN;
+
+  uint8_t goal = EEPROM.read(EEPROM_GOAL_ADDR);
+  goalScore = (goal >= MIN_GOAL_SCORE && goal <= MAX_GOAL_SCORE) ? goal : DEFAULT_GOAL_SCORE;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +226,10 @@ void loadSettings() {
 void resetScores() {
   teamA.score = 0;
   teamB.score = 0;
+  gameOver = false;
+  winnerLetter = '\0';
+  analogWrite(teamA.ledPin, 0);
+  analogWrite(teamB.ledPin, 0);
 }
 
 // Reads + debounces a team's button, returns true if pressed (active LOW).
@@ -252,8 +282,15 @@ void updateCapture(Team &team) {
       team.flashing = true;
       team.flashUntilMs = millis() + CAPTURE_FLASH_MS;
       analogWrite(team.ledPin, 255);
-      tone(BUZZER_PIN, BEEP_FREQ_CAPTURED, BEEP_DURATION_CAPTURED_MS);
       lcdNeedsRedraw = true;
+
+      if (team.score >= goalScore) {
+        gameOver = true;
+        winnerLetter = (&team == &teamA) ? 'A' : 'B';
+        tone(BUZZER_PIN, BEEP_FREQ_WIN, BEEP_DURATION_WIN_MS);
+      } else {
+        tone(BUZZER_PIN, BEEP_FREQ_CAPTURED, BEEP_DURATION_CAPTURED_MS);
+      }
     } else {
       int brightness = map(elapsed, 0, captureTimeMs, 0, 255);
       analogWrite(team.ledPin, brightness);
@@ -303,16 +340,20 @@ void renderScoreboard() {
   printPadded(line1, 16);
 
   char line2[17];
-  int progA = captureProgressPercent(teamA);
-  int progB = captureProgressPercent(teamB);
-  if (progA > 0 && progB > 0) {
-    snprintf(line2, sizeof(line2), "A:%3d%% B:%3d%%", progA, progB);
-  } else if (progA > 0) {
-    snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), 'A', progA);
-  } else if (progB > 0) {
-    snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), 'B', progB);
+  if (gameOver) {
+    snprintf(line2, sizeof(line2), tr(STR_WIN_FMT), winnerLetter);
   } else {
-    snprintf(line2, sizeof(line2), "%s", tr(STR_HINT_SETTINGS));
+    int progA = captureProgressPercent(teamA);
+    int progB = captureProgressPercent(teamB);
+    if (progA > 0 && progB > 0) {
+      snprintf(line2, sizeof(line2), "A:%3d%% B:%3d%%", progA, progB);
+    } else if (progA > 0) {
+      snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), 'A', progA);
+    } else if (progB > 0) {
+      snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), 'B', progB);
+    } else {
+      snprintf(line2, sizeof(line2), "%s", tr(STR_HINT_SETTINGS));
+    }
   }
   lcd.setCursor(0, 1);
   printPadded(line2, 16);
@@ -342,12 +383,20 @@ void renderSetCaptureTime() {
   printPadded(entryLen ? entryBuffer : tr(STR_SET_TIME_HINT), 16);
 }
 
+void renderSetGoal() {
+  lcd.setCursor(0, 0);
+  printPadded(tr(STR_SET_GOAL_TITLE), 16);
+  lcd.setCursor(0, 1);
+  printPadded(entryLen ? entryBuffer : tr(STR_SET_GOAL_HINT), 16);
+}
+
 void render() {
   switch (appState) {
     case STATE_SCOREBOARD:        renderScoreboard();       break;
     case STATE_ENTER_PIN:         renderEnterPin();         break;
     case STATE_MENU:              renderMenu();             break;
     case STATE_SET_CAPTURE_TIME:  renderSetCaptureTime();   break;
+    case STATE_SET_GOAL:          renderSetGoal();          break;
   }
 }
 
@@ -393,6 +442,8 @@ void handleKey(char key) {
         resetScores();
         lcdNeedsRedraw = true;
       } else if (key == '3') {
+        enterState(STATE_SET_GOAL);
+      } else if (key == '4') {
         currentLang = (currentLang == LANG_EN) ? LANG_FI : LANG_EN;
         saveSettings();
         lcdNeedsRedraw = true;
@@ -409,6 +460,25 @@ void handleKey(char key) {
           int seconds = atoi(entryBuffer);
           if (seconds >= MIN_CAPTURE_SECONDS && seconds <= MAX_CAPTURE_SECONDS) {
             captureTimeMs = (unsigned long)seconds * 1000UL;
+            saveSettings();
+          }
+        }
+        enterState(STATE_SCOREBOARD);
+      } else if (isdigit(key) && entryLen < 2) {
+        entryBuffer[entryLen++] = key;
+        entryBuffer[entryLen] = '\0';
+        lcdNeedsRedraw = true;
+      }
+      break;
+
+    case STATE_SET_GOAL:
+      if (key == '*') {
+        enterState(STATE_MENU);
+      } else if (key == '#') {
+        if (entryLen > 0) {
+          int pts = atoi(entryBuffer);
+          if (pts >= MIN_GOAL_SCORE && pts <= MAX_GOAL_SCORE) {
+            goalScore = pts;
             saveSettings();
           }
         }
@@ -446,8 +516,9 @@ void loop() {
   updateButton(teamB);
 
   // Only track capture progress on the main scoreboard screen — settings
-  // menu interaction takes priority over gameplay input.
-  if (appState == STATE_SCOREBOARD) {
+  // menu interaction takes priority over gameplay input. Once a team has
+  // hit the goal score, gameplay is frozen until a reset.
+  if (appState == STATE_SCOREBOARD && !gameOver) {
     updateCapture(teamA);
     updateCapture(teamB);
     updateProgressBuzzer();
