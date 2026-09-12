@@ -26,7 +26,7 @@ Press `*` to open the PIN-gated settings menu (default PIN `1234`) to adjust the
 
 ## Bomb
 
-**Extra parts:** 2 status LEDs (no buttons — used for feedback only), 16x4 I2C character LCD (e.g. PCF8574 backpack, address `0x27` or `0x3F`).
+**Extra parts:** 2 status LEDs (no buttons — used for feedback only), 20x4 I2C character LCD (e.g. PCF8574 backpack, address `0x27` or `0x3F`).
 
 An attacker enters the arm code on the keypad and confirms with `#` to start the countdown. While armed, the LEDs flash in sync and the buzzer ticks faster as time runs out. A defender enters the defuse code before time runs out to stop the clock (solid LED + confirmation tone). If the timer reaches zero, the bomb "explodes" (rapid LED flash + alarm siren) until reset.
 

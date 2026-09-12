@@ -27,11 +27,11 @@ char keypadKeys[KEYPAD_ROWS][KEYPAD_COLS] = {
 byte keypadRowPins[KEYPAD_ROWS] = {4, 5, 6, 7};
 byte keypadColPins[KEYPAD_COLS] = {8, 10, 11, 12};
 
-// 16x4 I2C LCD. Wired to the Uno R4's dedicated SDA/SCL pins via Wire.begin()
+// 20x4 I2C LCD. Wired to the Uno R4's dedicated SDA/SCL pins via Wire.begin()
 // — no digital pin numbers needed here. If the display shows nothing, the
 // most common fix is trying address 0x3F instead of 0x27.
 const uint8_t LCD_I2C_ADDR = 0x27;
-const uint8_t LCD_COLS = 16;
+const uint8_t LCD_COLS = 20;
 const uint8_t LCD_ROWS = 4;
 
 // ---------------------------------------------------------------------------
@@ -117,53 +117,53 @@ enum StrId {
 };
 
 const char *const STRINGS_EN[STR_COUNT] = {
-  "BOMB: UNARMED",
-  "Enter arm code:",
-  "* = settings",
-  "*** ARMED ***",
-  "Time: %s",
-  "Defuse code:",
-  "#=defuse *=clear",
-  "*** DEFUSED ***",
-  "!!!! BOOM !!!!",
-  "Bomb exploded",
-  "Enter admin PIN:",
-  "#=OK  *=back",
-  "1)Timer",
-  "2)ArmCode",
-  "3)DefuseCode",
-  "4)Lang  #/*=Exit",
-  "Set timer (sec)",
-  "Range %d-%d",
-  "#=save *=cancel",
-  "Arm code:",
-  "Defuse code:",
-  "Enter 4 digits:",
-  "Wrong code"
+  "*** BOMB SAFE ***",
+  "Enter the arm code:",
+  "Press * for Settings",
+  "**** BOMB ARMED ****",
+  "Time left: %s",
+  "Enter defuse code:",
+  "# = Defuse * = Clear",
+  "*** BOMB DEFUSED ***",
+  "!!!!!! BOOM !!!!!!",
+  "The bomb exploded!",
+  "Enter the admin PIN:",
+  "# = OK   * = Back",
+  "1) Timer",
+  "2) Arm code",
+  "3) Defuse code",
+  "4) Language #/*=Exit",
+  "Set timer (seconds)",
+  "Valid range: %d-%d",
+  "# = Save  * = Cancel",
+  "New arm code:",
+  "New defuse code:",
+  "Enter 4-digit code:",
+  "Wrong code!"
 };
 
 const char *const STRINGS_FI[STR_COUNT] = {
-  "POMMI: TURVATILA",
-  "Virita koodilla:",
-  "* = asetukset",
-  "** VIRITETTY **",
-  "Aika: %s",
-  "Purkukoodi:",
-  "#=pura *=poista",
-  "*** PURETTU ***",
-  "!!!! PAM !!!!",
-  "Pommi rajahti",
+  "** POMMI TURVASSA **",
+  "Syota viritys koodi:",
+  "Paina * asetuksiin",
+  "* POMMI VIRITETTY *",
+  "Aikaa jaljella %s",
+  "Anna purkukoodi:",
+  "#=Pura *=Tyhjenna",
+  "** POMMI PURETTU **",
+  "!!!!!! PAM !!!!!!",
+  "Pommi on rajahtanyt!",
   "Anna PIN-koodi:",
-  "#=OK  *=takaisin",
-  "1)Ajastin",
-  "2)Virityskoodi",
-  "3)Purkukoodi",
-  "4)Kieli #/*=pois",
-  "Aseta ajastin",
-  "Alue %d-%d",
-  "#=tallenna*=peru",
-  "Virityskoodi:",
-  "Purkukoodi:",
+  "# = OK  * = Takaisin",
+  "1) Ajastin",
+  "2) Virityskoodi",
+  "3) Purkukoodi",
+  "4) Kieli #/*=Poistu",
+  "Aseta ajastin (s)",
+  "Sallittu alue %d-%d",
+  "#=Tallenna *=Peru",
+  "Uusi virityskoodi:",
+  "Uusi purkukoodi:",
   "Anna 4 numeroa:",
   "Vaara koodi"
 };
@@ -209,7 +209,7 @@ unsigned long defusedRemainingMs = 0;
 bool lcdNeedsRedraw = true;
 int lastDisplayedSeconds = -1;
 
-char transientMsg[17] = "";
+char transientMsg[LCD_COLS + 1] = "";
 unsigned long transientUntilMs = 0;
 
 unsigned long nextTickBeepMs = 0;
@@ -297,7 +297,7 @@ void maskedEntry(char *out, size_t outSize) {
 
 void printLine(uint8_t row, const char *text) {
   char buf[LCD_COLS + 1];
-  snprintf(buf, sizeof(buf), "%-16.16s", text);
+  snprintf(buf, sizeof(buf), "%-*.*s", LCD_COLS, LCD_COLS, text);
   lcd.setCursor(0, row);
   lcd.print(buf);
 }
@@ -449,7 +449,7 @@ void renderArmed() {
   if (transientActive()) {
     printLine(1, transientMsg);
   } else {
-    char line1[17];
+    char line1[LCD_COLS + 1];
     snprintf(line1, sizeof(line1), tr(STR_TIME_FMT), timeStr);
     printLine(1, line1);
   }
@@ -463,7 +463,7 @@ void renderDefused() {
   printLine(0, tr(STR_DEFUSED_TITLE));
   char timeStr[6];
   formatMMSS(defusedRemainingMs, timeStr, sizeof(timeStr));
-  char line1[17];
+  char line1[LCD_COLS + 1];
   snprintf(line1, sizeof(line1), tr(STR_TIME_FMT), timeStr);
   printLine(1, line1);
   printLine(2, "");
@@ -495,7 +495,7 @@ void renderMenu() {
 
 void renderSetTime() {
   printLine(0, tr(STR_SET_TIME_TITLE));
-  char range[17];
+  char range[LCD_COLS + 1];
   snprintf(range, sizeof(range), tr(STR_RANGE_FMT), MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS);
   printLine(1, range);
   printLine(2, entryLen > 0 ? entryBuffer : tr(STR_HINT_SAVE_CANCEL));
