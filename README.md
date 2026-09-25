@@ -20,9 +20,15 @@ Exact pin assignments are defined as named constants at the top of each project'
 
 **Extra parts:** 2 momentary pushbuttons (one red, one yellow), 2 small 5 mm LEDs (red and yellow) with 470 Ω resistors, 16x2 character LCD (parallel-wired, e.g. HD44780).
 
-Two teams, Red and Yellow, each hold their own coloured button to capture the point. The LED brightness ramps up as you hold (releasing early resets progress), and the buzzer beeps faster the closer you get. Holding for the full capture time scores a point for that team and flashes the LED. The LCD shows both teams' live scores and capture progress. The first team to reach the configurable goal score (default 5) wins — their LED stays lit, the buzzer plays a victory tone, and further captures are locked out until the scores are reset.
+A domination-style point for two teams, Red and Yellow. A team captures the point by holding its own coloured button for 5 seconds: its LED fades up and the buzzer beeps faster as it gets closer, and letting go early loses the progress. The first capture starts the game clock (default 15 minutes). Every time the point changes hands a long beep sounds, the capturing team scores a point straight away, and then it earns another point every few seconds (default 5, with a soft tick each time) until the other team captures it back. Its LED stays lit while it holds the point. The top line of the LCD shows both scores and the time left (`R42  14:59  Y17`); the bottom line shows who holds the point or who is capturing it. The buzzer gives a double beep at 5 minutes left, a triple beep at 1 minute, and counts down the last 10 seconds.
 
-Press `*` to open the PIN-gated settings menu (default PIN `1234`) to adjust the capture time or the goal score, or to reset the scores.
+The game ends when a team reaches the goal score (default 100, which takes well over half a 15-minute game of holding the point) or when the clock runs out, in which case the team with more points wins and equal scores are a draw. The winner's LED stays lit (both LEDs on a draw). Hold `#` for two seconds to clear the result, ready for the next game.
+
+The lettered keys show statistics: `B` time each team held the point, `C` how many times each team captured it, `D` each team's longest unbroken hold, and `A` goes back to the scoreboard. During a game a statistics page returns to the scoreboard by itself after 10 seconds.
+
+The game is saved every 10 seconds and at every capture (and whenever it ends or is reset), so after a power cut it picks up where it left off; time without power doesn't count. Saves go to a separate area of the R4's flash as a rolling log, so they don't wear out the memory holding the settings.
+
+Press `*` to open the PIN-gated settings menu (default PIN `1234`) to change the game length, how often points are awarded, or the goal score (`0` turns the goal off so only the clock decides), or to start a new game. The game clock keeps running while the menu is open, and a new game length applies from the next game.
 
 ## Bomb
 
