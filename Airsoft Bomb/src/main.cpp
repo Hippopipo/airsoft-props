@@ -8,9 +8,10 @@
 // Pin configuration — adjust these to match your actual wiring.
 // ---------------------------------------------------------------------------
 
-// Status LEDs (no buttons wired in this gamemode — LEDs are feedback only)
-const uint8_t LED_A_PIN = 2;
-const uint8_t LED_B_PIN = 3;
+// Status LEDs. Green = bomb not counting down; red = blinks with each
+// countdown beep, like the Counter-Strike C4.
+const uint8_t LED_RED_PIN = 2;
+const uint8_t LED_GREEN_PIN = 3;
 
 // Passive buzzer (driven with tone())
 const uint8_t BUZZER_PIN = 9;
@@ -41,45 +42,63 @@ const uint8_t LCD_ROWS = 4;
 const int MIN_COUNTDOWN_SECONDS = 10;
 const int MAX_COUNTDOWN_SECONDS = 600;
 const int DEFAULT_COUNTDOWN_SECONDS = 90;
-const char *DEFAULT_ARM_CODE = "1111";
-const char *DEFAULT_DEFUSE_CODE = "2222";
+const uint8_t CODE_LEN = 6; // arming and disarming codes
+const uint8_t PIN_LEN = 4;  // admin PIN
+const char *DEFAULT_ARM_CODE = "111111";
+const char *DEFAULT_DEFUSE_CODE = "222222";
 const char *DEFAULT_ADMIN_PIN = "1234";
 
-const unsigned long LED_ARMED_FLASH_MS = 400;   // sync flash rate while armed
-const unsigned long LED_EXPLODE_FLASH_MS = 100; // rapid flash after exploding
+// Countdown modelled on the Counter-Strike C4: a short high beep with a red
+// blink, the gap shrinking from 1 s to 0.1 s as time runs out, then one
+// continuous tone for the final second.
+const unsigned int BEEP_FREQ_TICK = 2900;
+const unsigned int BEEP_DURATION_TICK_MS = 90;
+const unsigned long RED_FLASH_MS = 90;
+const unsigned long TICK_INTERVAL_START_MS = 1000;
+const unsigned long TICK_INTERVAL_END_MS = 100;
+const unsigned long FINAL_TONE_MS = 1000;
+const unsigned int FINAL_TONE_FREQ = 3400;
 
-const unsigned int BEEP_FREQ_TICK = 1200;
-const unsigned int BEEP_DURATION_TICK_MS = 60;
-const unsigned long TICK_INTERVAL_START_MS = 900; // tick rate right after arming
-const unsigned long TICK_INTERVAL_END_MS = 150;   // tick rate just before detonation
-
-const unsigned int BEEP_FREQ_ARMED_CONFIRM = 1500;
-const unsigned int BEEP_FREQ_DEFUSED_CONFIRM = 2000;
-const unsigned int BEEP_DURATION_CONFIRM_MS = 450;
+const unsigned int KEY_CLICK_FREQ = 1800;   // keypad press while arming/disarming
+const unsigned int KEY_CLICK_MS = 35;
 const unsigned int BEEP_FREQ_WRONG = 300;
 const unsigned int BEEP_DURATION_WRONG_MS = 200;
 
-const unsigned int ALARM_FREQ_HIGH = 1800;
-const unsigned int ALARM_FREQ_LOW = 900;
-const unsigned long ALARM_TOGGLE_MS = 150;
+// After a wrong code the message stays up and the keypad is locked this long.
+const unsigned long WRONG_CODE_COOLDOWN_MS = 3000;
 
-const unsigned long TRANSIENT_MSG_MS = 1200; // how long "Wrong code" etc. stays up
+// The defused screen blinks a full row of blocks three times; each phase
+// lines up with one step of SEQ_DEFUSED.
+const unsigned long DEFUSE_BLINK_MS = 120;
+
+// After a round, # must be held this long to reset, so a stray press by a
+// player can't wipe the result. A shorter tap shows a hint instead.
+const unsigned long RESET_HOLD_MS = 2000;
+const unsigned long HOLD_HINT_MS = 2000;
+
+struct Note { uint16_t freq; uint16_t ms; };
+const uint16_t NOISE = 1; // random low rumble: the closest a piezo gets to a boom
+const Note SEQ_PLANTED[]   = {{2900, 90}, {0, 70}, {2900, 90}};
+const Note SEQ_DEFUSED[]   = {{1800, 120}, {0, 120}, {2400, 120}, {0, 120}, {3200, 300}};
+const Note SEQ_EXPLOSION[] = {{NOISE, 1600}};
 
 // Buzzer/LED switching noise can knock the HD44780 out of 4-bit sync and
 // garble the screen, so the static end screens periodically resync it.
 const unsigned long LCD_RESYNC_MS = 3000;
+
+const char BLOCK = (char)0xFF; // solid block in the HD44780 character ROM
 
 // ---------------------------------------------------------------------------
 // EEPROM layout
 // ---------------------------------------------------------------------------
 
 const int EEPROM_MAGIC_ADDR = 0;
-const uint8_t EEPROM_MAGIC_VAL = 0xB5;
+const uint8_t EEPROM_MAGIC_VAL = 0xB6; // change whenever the layout changes; resets to defaults
 const int EEPROM_COUNTDOWN_ADDR = 1;   // 2 bytes: uint16_t seconds
-const int EEPROM_ARM_CODE_ADDR = 3;    // 4 bytes
-const int EEPROM_DEFUSE_CODE_ADDR = 7; // 4 bytes
-const int EEPROM_ADMIN_PIN_ADDR = 11;  // 4 bytes
-const int EEPROM_LANG_ADDR = 15;       // 1 byte: Lang enum value
+const int EEPROM_ARM_CODE_ADDR = 3;    // 6 bytes
+const int EEPROM_DEFUSE_CODE_ADDR = 9; // 6 bytes
+const int EEPROM_ADMIN_PIN_ADDR = 15;  // 4 bytes
+const int EEPROM_LANG_ADDR = 19;       // 1 byte: Lang enum value
 
 // ---------------------------------------------------------------------------
 // Language / on-screen text
@@ -94,16 +113,15 @@ enum Lang { LANG_EN, LANG_FI };
 Lang currentLang = LANG_EN;
 
 enum StrId {
-  STR_BOMB_SAFE,
+  STR_TITLE_DISARMED,
   STR_ENTER_ARM_CODE,
   STR_HINT_SETTINGS,
-  STR_ARMED_TITLE,
-  STR_TIME_FMT,
+  STR_TITLE_ARMED,
   STR_ENTER_DEFUSE_CODE,
-  STR_HINT_DEFUSE_CLEAR,
-  STR_DEFUSED_TITLE,
+  STR_TITLE_DEFUSED,
   STR_BOOM_TITLE,
   STR_BOOM_SUBTITLE,
+  STR_HINT_SETTINGS_RESET,
   STR_ENTER_PIN,
   STR_HINT_PIN_CONFIRM_BACK,
   STR_MENU_LINE0,
@@ -115,61 +133,74 @@ enum StrId {
   STR_HINT_SAVE_CANCEL,
   STR_SET_ARM_TITLE,
   STR_SET_DEFUSE_TITLE,
-  STR_ENTER_4_DIGITS,
+  STR_ENTER_6_DIGITS,
   STR_WRONG_CODE,
+  STR_SET_PIN_TITLE,
+  STR_CONFIRM_PIN_TITLE,
+  STR_ENTER_4_DIGITS,
+  STR_PIN_MISMATCH,
+  STR_HOLD_TO_RESET,
   STR_COUNT
 };
 
 const char *const STRINGS_EN[STR_COUNT] = {
-  "*** BOMB SAFE ***",
-  "Enter the arm code:",
+  "** BOMB DISARMED **",
+  "Enter arming code",
   "Press * for Settings",
-  "**** BOMB ARMED ****",
-  "Time left: %s",
-  "Enter defuse code:",
-  "# = Defuse * = Clear",
+  "*** BOMB ARMED ***",
+  "Enter disarming code",
   "*** BOMB DEFUSED ***",
   "!!!!!! BOOM !!!!!!",
   "The bomb exploded!",
+  "*=Settings  #=Reset",
   "Enter the admin PIN:",
   "# = OK   * = Back",
-  "1) Timer",
-  "2) Arm code",
-  "3) Defuse code",
-  "4) Language #/*=Exit",
+  "1) Timer  2) PIN",
+  "3) Arming code",
+  "4) Disarming code",
+  "5) Language #/*=Exit",
   "Set timer (seconds)",
   "Valid range: %d-%d",
   "# = Save  * = Cancel",
-  "New arm code:",
-  "New defuse code:",
-  "Enter 4-digit code:",
-  "Wrong code!"
+  "New arming code:",
+  "New disarming code:",
+  "Enter 6-digit code:",
+  "Wrong code!",
+  "New admin PIN:",
+  "Repeat new PIN:",
+  "Enter 4-digit PIN:",
+  "PINs don't match",
+  "Hold # to reset"
 };
 
 const char *const STRINGS_FI[STR_COUNT] = {
-  "** POMMI TURVASSA **",
-  "Syota viritys koodi:",
+  "POMMI EI VIRITETTY",
+  "Syota virityskoodi",
   "Paina * asetuksiin",
   "* POMMI VIRITETTY *",
-  "Aikaa jaljella %s",
-  "Anna purkukoodi:",
-  "#=Pura *=Tyhjenna",
+  "Syota purkukoodi",
   "** POMMI PURETTU **",
   "!!!!!! PAM !!!!!!",
   "Pommi on rajahtanyt!",
+  "*=Asetukset #=Nollaa",
   "Anna PIN-koodi:",
   "# = OK  * = Takaisin",
-  "1) Ajastin",
-  "2) Virityskoodi",
-  "3) Purkukoodi",
-  "4) Kieli #/*=Poistu",
+  "1) Ajastin  2) PIN",
+  "3) Virityskoodi",
+  "4) Purkukoodi",
+  "5) Kieli #/*=Poistu",
   "Aseta ajastin (s)",
   "Sallittu alue %d-%d",
   "#=Tallenna *=Peru",
   "Uusi virityskoodi:",
   "Uusi purkukoodi:",
+  "Anna 6 numeroa:",
+  "Vaara koodi",
+  "Uusi PIN-koodi:",
+  "Toista PIN-koodi:",
   "Anna 4 numeroa:",
-  "Vaara koodi"
+  "Koodit eivat tasmaa",
+  "Pida # pohjassa"
 };
 
 const char *tr(StrId id) {
@@ -184,9 +215,10 @@ LiquidCrystal_I2C lcd(LCD_I2C_ADDR, LCD_COLS, LCD_ROWS);
 Keypad keypad = Keypad(makeKeymap(keypadKeys), keypadRowPins, keypadColPins, KEYPAD_ROWS, KEYPAD_COLS);
 
 unsigned long countdownDurationMs;
-char armCode[5];
-char defuseCode[5];
-char adminPin[5];
+char armCode[CODE_LEN + 1];
+char defuseCode[CODE_LEN + 1];
+char adminPin[PIN_LEN + 1];
+char pendingPin[PIN_LEN + 1]; // new PIN awaiting its confirmation entry
 
 enum AppState {
   STATE_IDLE,
@@ -196,6 +228,8 @@ enum AppState {
   STATE_ENTER_ADMIN_PIN,
   STATE_MENU,
   STATE_SET_TIME,
+  STATE_SET_ADMIN_PIN,
+  STATE_CONFIRM_ADMIN_PIN,
   STATE_SET_ARM_CODE,
   STATE_SET_DEFUSE_CODE
 };
@@ -203,48 +237,72 @@ enum AppState {
 AppState appState = STATE_IDLE;
 AppState returnState = STATE_IDLE; // where to go back to if admin PIN entry is cancelled/wrong
 
-char entryBuffer[5] = "";
+char entryBuffer[CODE_LEN + 1] = ""; // CODE_LEN is the longest entry
 uint8_t entryLen = 0;
+
+bool resetHolding = false;
+unsigned long resetHoldStartMs = 0;
 
 unsigned long armedStartMs = 0;
 unsigned long armedRemainingMs = 0;
 unsigned long defusedRemainingMs = 0;
-
-bool lcdNeedsRedraw = true;
-int lastDisplayedSeconds = -1;
+unsigned long defusedAtMs = 0;
 
 char transientMsg[LCD_COLS + 1] = "";
 unsigned long transientUntilMs = 0;
 
+unsigned long lastBeepMs = 0;
 unsigned long nextTickBeepMs = 0;
-unsigned long ledFlashToggleMs = 0;
-bool ledFlashOn = false;
+unsigned long redFlashUntilMs = 0;
+bool pendulumRight = true;
+bool finalToneOn = false;
 
-unsigned long nextAlarmToggleMs = 0;
-bool alarmToneHigh = false;
+const Note *seq = nullptr;
+uint8_t seqLen = 0;
+uint8_t seqIdx = 0;
+unsigned long seqStepEndMs = 0;
+unsigned long nextNoiseMs = 0;
 
 unsigned long nextLcdResyncMs = 0;
+
+// What the screen should show vs. what it currently shows. Only the
+// characters that differ are sent, since a full 4-line rewrite over I2C
+// blocks for ~0.1 s and would make the countdown animation stutter.
+char frame[LCD_ROWS][LCD_COLS];
+char shown[LCD_ROWS][LCD_COLS];
 
 // ---------------------------------------------------------------------------
 // EEPROM helpers
 // ---------------------------------------------------------------------------
 
+void saveCode(int addr, const char *code, uint8_t len) {
+  for (uint8_t i = 0; i < len; i++) EEPROM.update(addr + i, code[i]);
+}
+
 void saveSettings() {
   EEPROM.update(EEPROM_MAGIC_ADDR, EEPROM_MAGIC_VAL);
   uint16_t seconds = (uint16_t)(countdownDurationMs / 1000UL);
   EEPROM.put(EEPROM_COUNTDOWN_ADDR, seconds);
-  for (uint8_t i = 0; i < 4; i++) EEPROM.update(EEPROM_ARM_CODE_ADDR + i, armCode[i]);
-  for (uint8_t i = 0; i < 4; i++) EEPROM.update(EEPROM_DEFUSE_CODE_ADDR + i, defuseCode[i]);
-  for (uint8_t i = 0; i < 4; i++) EEPROM.update(EEPROM_ADMIN_PIN_ADDR + i, adminPin[i]);
+  saveCode(EEPROM_ARM_CODE_ADDR, armCode, CODE_LEN);
+  saveCode(EEPROM_DEFUSE_CODE_ADDR, defuseCode, CODE_LEN);
+  saveCode(EEPROM_ADMIN_PIN_ADDR, adminPin, PIN_LEN);
   EEPROM.update(EEPROM_LANG_ADDR, (uint8_t)currentLang);
+}
+
+void loadCode(int addr, char *code, uint8_t len, const char *fallback) {
+  for (uint8_t i = 0; i < len; i++) {
+    char c = EEPROM.read(addr + i);
+    code[i] = (c >= '0' && c <= '9') ? c : fallback[i];
+  }
+  code[len] = '\0';
 }
 
 void loadSettings() {
   if (EEPROM.read(EEPROM_MAGIC_ADDR) != EEPROM_MAGIC_VAL) {
     countdownDurationMs = DEFAULT_COUNTDOWN_SECONDS * 1000UL;
-    memcpy(armCode, DEFAULT_ARM_CODE, 5);
-    memcpy(defuseCode, DEFAULT_DEFUSE_CODE, 5);
-    memcpy(adminPin, DEFAULT_ADMIN_PIN, 5);
+    memcpy(armCode, DEFAULT_ARM_CODE, CODE_LEN + 1);
+    memcpy(defuseCode, DEFAULT_DEFUSE_CODE, CODE_LEN + 1);
+    memcpy(adminPin, DEFAULT_ADMIN_PIN, PIN_LEN + 1);
     currentLang = LANG_EN;
     saveSettings();
     return;
@@ -257,66 +315,97 @@ void loadSettings() {
   }
   countdownDurationMs = (unsigned long)seconds * 1000UL;
 
-  for (uint8_t i = 0; i < 4; i++) {
-    char c = EEPROM.read(EEPROM_ARM_CODE_ADDR + i);
-    armCode[i] = (c >= '0' && c <= '9') ? c : DEFAULT_ARM_CODE[i];
-  }
-  armCode[4] = '\0';
-
-  for (uint8_t i = 0; i < 4; i++) {
-    char c = EEPROM.read(EEPROM_DEFUSE_CODE_ADDR + i);
-    defuseCode[i] = (c >= '0' && c <= '9') ? c : DEFAULT_DEFUSE_CODE[i];
-  }
-  defuseCode[4] = '\0';
-
-  for (uint8_t i = 0; i < 4; i++) {
-    char c = EEPROM.read(EEPROM_ADMIN_PIN_ADDR + i);
-    adminPin[i] = (c >= '0' && c <= '9') ? c : DEFAULT_ADMIN_PIN[i];
-  }
-  adminPin[4] = '\0';
+  loadCode(EEPROM_ARM_CODE_ADDR, armCode, CODE_LEN, DEFAULT_ARM_CODE);
+  loadCode(EEPROM_DEFUSE_CODE_ADDR, defuseCode, CODE_LEN, DEFAULT_DEFUSE_CODE);
+  loadCode(EEPROM_ADMIN_PIN_ADDR, adminPin, PIN_LEN, DEFAULT_ADMIN_PIN);
 
   uint8_t lang = EEPROM.read(EEPROM_LANG_ADDR);
   currentLang = (lang == LANG_FI) ? LANG_FI : LANG_EN;
 }
 
 // ---------------------------------------------------------------------------
-// Small utilities
+// LEDs
 // ---------------------------------------------------------------------------
 
-void setLeds(bool on) {
-  digitalWrite(LED_A_PIN, on ? HIGH : LOW);
-  digitalWrite(LED_B_PIN, on ? HIGH : LOW);
-}
-
-void formatMMSS(unsigned long ms, char *out, size_t outSize) {
-  unsigned long totalSeconds = ms / 1000UL;
-  unsigned int mm = totalSeconds / 60;
-  unsigned int ss = totalSeconds % 60;
-  snprintf(out, outSize, "%02u:%02u", mm, ss);
-}
-
-void maskedEntry(char *out, size_t outSize) {
-  uint8_t i = 0;
-  for (; i < entryLen && i + 1 < outSize; i++) out[i] = '*';
-  out[i] = '\0';
-}
-
-void printLine(uint8_t row, const char *text) {
-  char buf[LCD_COLS + 1];
-  snprintf(buf, sizeof(buf), "%-*.*s", LCD_COLS, LCD_COLS, text);
-  lcd.setCursor(0, row);
-  lcd.print(buf);
+void updateLeds() {
+  bool green = appState != STATE_ARMED && appState != STATE_EXPLODED;
+  bool red = false;
+  if (appState == STATE_ARMED) {
+    red = finalToneOn || millis() < redFlashUntilMs;
+  } else if (appState == STATE_EXPLODED) {
+    red = seq ? (millis() / 50) % 2 : true; // flicker during the blast, then stay lit
+  }
+  digitalWrite(LED_GREEN_PIN, green ? HIGH : LOW);
+  digitalWrite(LED_RED_PIN, red ? HIGH : LOW);
 }
 
 // ---------------------------------------------------------------------------
-// Transient status messages (e.g. "Wrong code")
+// Sound sequences (non-blocking)
 // ---------------------------------------------------------------------------
 
-void showTransient(const char *msg) {
+void startNote() {
+  const Note &n = seq[seqIdx];
+  seqStepEndMs = millis() + n.ms;
+  nextNoiseMs = 0;
+  if (n.freq == 0) noTone(BUZZER_PIN);
+  else if (n.freq != NOISE) tone(BUZZER_PIN, n.freq);
+}
+
+template <size_t N>
+void playSeq(const Note (&s)[N]) {
+  seq = s;
+  seqLen = N;
+  seqIdx = 0;
+  startNote();
+}
+
+void stopSound() {
+  seq = nullptr;
+  finalToneOn = false;
+  noTone(BUZZER_PIN);
+}
+
+void updateSeq() {
+  if (!seq) return;
+  if (millis() >= seqStepEndMs) {
+    if (++seqIdx >= seqLen) {
+      seq = nullptr;
+      noTone(BUZZER_PIN);
+      return;
+    }
+    startNote();
+  }
+  if (seq[seqIdx].freq == NOISE && millis() >= nextNoiseMs) {
+    tone(BUZZER_PIN, random(60, 260));
+    nextNoiseMs = millis() + 12;
+  }
+}
+
+// Short one-off beeps; skipped during the final-second tone so it isn't cut off.
+void blip(unsigned int freq, unsigned int ms) {
+  if (!finalToneOn) tone(BUZZER_PIN, freq, ms);
+}
+
+// ---------------------------------------------------------------------------
+// Code entry and wrong-code cooldown
+// ---------------------------------------------------------------------------
+
+void resetEntry() {
+  entryLen = 0;
+  entryBuffer[0] = '\0';
+}
+
+bool appendDigit(char key, uint8_t maxLen) {
+  if (entryLen >= maxLen) return false;
+  entryBuffer[entryLen++] = key;
+  entryBuffer[entryLen] = '\0';
+  return true;
+}
+
+void showTransient(const char *msg, unsigned long ms = WRONG_CODE_COOLDOWN_MS) {
   strncpy(transientMsg, msg, sizeof(transientMsg) - 1);
   transientMsg[sizeof(transientMsg) - 1] = '\0';
-  transientUntilMs = millis() + TRANSIENT_MSG_MS;
-  lcdNeedsRedraw = true;
+  transientUntilMs = millis() + ms;
 }
 
 bool transientActive() {
@@ -324,10 +413,7 @@ bool transientActive() {
 }
 
 void updateTransient() {
-  if (transientActive() && millis() >= transientUntilMs) {
-    transientMsg[0] = '\0';
-    lcdNeedsRedraw = true;
-  }
+  if (transientActive() && millis() >= transientUntilMs) transientMsg[0] = '\0';
 }
 
 // ---------------------------------------------------------------------------
@@ -336,298 +422,362 @@ void updateTransient() {
 
 void enterIdle() {
   appState = STATE_IDLE;
-  entryLen = 0;
-  entryBuffer[0] = '\0';
-  setLeds(false);
-  noTone(BUZZER_PIN);
+  resetEntry();
+  stopSound();
   transientMsg[0] = '\0';
-  lastDisplayedSeconds = -1;
-  lcdNeedsRedraw = true;
+  resetHolding = false;
 }
 
 void enterArmed() {
   appState = STATE_ARMED;
-  entryLen = 0;
-  entryBuffer[0] = '\0';
+  resetEntry();
   armedStartMs = millis();
   armedRemainingMs = countdownDurationMs;
-  lastDisplayedSeconds = -1;
-  nextTickBeepMs = millis();
-  ledFlashOn = false;
-  ledFlashToggleMs = millis();
-  tone(BUZZER_PIN, BEEP_FREQ_ARMED_CONFIRM, BEEP_DURATION_CONFIRM_MS);
-  lcdNeedsRedraw = true;
+  lastBeepMs = millis();
+  nextTickBeepMs = millis() + TICK_INTERVAL_START_MS; // let the "planted" chirp finish first
+  pendulumRight = true;
+  redFlashUntilMs = 0;
+  finalToneOn = false;
+  playSeq(SEQ_PLANTED);
 }
 
 void enterDefused() {
   appState = STATE_DEFUSED;
-  entryLen = 0;
-  entryBuffer[0] = '\0';
+  resetEntry();
   defusedRemainingMs = armedRemainingMs;
-  setLeds(true);
-  tone(BUZZER_PIN, BEEP_FREQ_DEFUSED_CONFIRM, BEEP_DURATION_CONFIRM_MS);
+  defusedAtMs = millis();
+  finalToneOn = false;
+  playSeq(SEQ_DEFUSED);
   nextLcdResyncMs = millis() + LCD_RESYNC_MS;
-  lcdNeedsRedraw = true;
 }
 
 void enterExploded() {
   appState = STATE_EXPLODED;
-  entryLen = 0;
-  entryBuffer[0] = '\0';
-  nextAlarmToggleMs = millis();
-  alarmToneHigh = false;
-  ledFlashOn = false;
-  ledFlashToggleMs = millis();
+  resetEntry();
+  transientMsg[0] = '\0';
+  finalToneOn = false;
+  playSeq(SEQ_EXPLOSION);
   nextLcdResyncMs = millis() + LCD_RESYNC_MS;
-  lcdNeedsRedraw = true;
 }
 
 void enterAdminGate(AppState from) {
-  noTone(BUZZER_PIN); // the explosion siren is an untimed tone and would otherwise play on through the menu
+  stopSound(); // untimed tones would otherwise play on through the menu
   returnState = from;
   appState = STATE_ENTER_ADMIN_PIN;
-  entryLen = 0;
-  entryBuffer[0] = '\0';
-  lcdNeedsRedraw = true;
+  resetEntry();
+  transientMsg[0] = '\0';
+  resetHolding = false;
 }
 
 // ---------------------------------------------------------------------------
-// Per-state background updates (countdown, LEDs, buzzer)
+// Hold # to reset (defused/exploded screens)
+// ---------------------------------------------------------------------------
+
+// getKey() only reports presses, so a hold is read from the library's key list.
+bool keyDown(char c) {
+  int i = keypad.findInList(c);
+  return i >= 0 && (keypad.key[i].kstate == PRESSED || keypad.key[i].kstate == HOLD);
+}
+
+void startResetHold() {
+  blip(KEY_CLICK_FREQ, KEY_CLICK_MS);
+  transientMsg[0] = '\0';
+  resetHolding = true;
+  resetHoldStartMs = millis();
+}
+
+void updateResetHold() {
+  if (!resetHolding) return;
+  if (!keyDown('#')) {
+    resetHolding = false;
+    showTransient(tr(STR_HOLD_TO_RESET), HOLD_HINT_MS);
+  } else if (millis() - resetHoldStartMs >= RESET_HOLD_MS) {
+    enterIdle();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Countdown
 // ---------------------------------------------------------------------------
 
 void updateArmed() {
   unsigned long elapsed = millis() - armedStartMs;
   armedRemainingMs = (elapsed >= countdownDurationMs) ? 0 : countdownDurationMs - elapsed;
 
-  int currentSeconds = (int)(armedRemainingMs / 1000UL);
-  if (currentSeconds != lastDisplayedSeconds) {
-    lastDisplayedSeconds = currentSeconds;
-    lcdNeedsRedraw = true;
-  }
-
   if (armedRemainingMs == 0) {
     enterExploded();
     return;
   }
 
-  if (millis() - ledFlashToggleMs >= LED_ARMED_FLASH_MS) {
-    ledFlashToggleMs = millis();
-    ledFlashOn = !ledFlashOn;
-    setLeds(ledFlashOn);
+  if (armedRemainingMs <= FINAL_TONE_MS) {
+    if (!finalToneOn) {
+      seq = nullptr;
+      finalToneOn = true;
+      tone(BUZZER_PIN, FINAL_TONE_FREQ);
+    }
+    return;
   }
 
   if (millis() >= nextTickBeepMs) {
     tone(BUZZER_PIN, BEEP_FREQ_TICK, BEEP_DURATION_TICK_MS);
-    unsigned long elapsedPercent = 100UL - ((armedRemainingMs * 100UL) / countdownDurationMs);
-    unsigned long interval = map(elapsedPercent, 0, 100, TICK_INTERVAL_START_MS, TICK_INTERVAL_END_MS);
-    nextTickBeepMs = millis() + interval;
+    redFlashUntilMs = millis() + RED_FLASH_MS;
+    unsigned long interval = TICK_INTERVAL_END_MS +
+        (TICK_INTERVAL_START_MS - TICK_INTERVAL_END_MS) * armedRemainingMs / countdownDurationMs;
+    lastBeepMs = millis();
+    nextTickBeepMs = lastBeepMs + interval;
+    pendulumRight = !pendulumRight;
   }
 }
 
-void updateExploded() {
-  if (millis() - ledFlashToggleMs >= LED_EXPLODE_FLASH_MS) {
-    ledFlashToggleMs = millis();
-    ledFlashOn = !ledFlashOn;
-    setLeds(ledFlashOn);
-  }
-
-  if (millis() >= nextAlarmToggleMs) {
-    alarmToneHigh = !alarmToneHigh;
-    tone(BUZZER_PIN, alarmToneHigh ? ALARM_FREQ_HIGH : ALARM_FREQ_LOW);
-    nextAlarmToggleMs = millis() + ALARM_TOGGLE_MS;
-  }
+// The block crosses the whole row once per beep interval, reaching the far
+// end exactly as the next beep plays, then swings back.
+uint8_t pendulumPos() {
+  unsigned long span = nextTickBeepMs - lastBeepMs;
+  unsigned long t = millis() - lastBeepMs;
+  if (t > span) t = span;
+  uint8_t p = t * (LCD_COLS - 1) / span;
+  return pendulumRight ? p : (LCD_COLS - 1) - p;
 }
 
 // ---------------------------------------------------------------------------
 // LCD rendering
 // ---------------------------------------------------------------------------
 
+void invalidateLcd() {
+  memset(shown, 0, sizeof(shown)); // 0 is never drawn, so every cell gets resent
+}
+
+void putLine(uint8_t row, const char *text, bool center = false) {
+  uint8_t len = 0;
+  while (len < LCD_COLS && text[len]) len++;
+  uint8_t start = center ? (LCD_COLS - len) / 2 : 0;
+  memset(frame[row], ' ', LCD_COLS);
+  memcpy(frame[row] + start, text, len);
+}
+
+void fillLine(uint8_t row, char c) {
+  memset(frame[row], c, LCD_COLS);
+}
+
+void flushLcd() {
+  for (uint8_t r = 0; r < LCD_ROWS; r++) {
+    uint8_t c = 0;
+    while (c < LCD_COLS) {
+      if (frame[r][c] == shown[r][c]) { c++; continue; }
+      lcd.setCursor(c, r);
+      while (c < LCD_COLS && frame[r][c] != shown[r][c]) {
+        lcd.write((uint8_t)frame[r][c]);
+        shown[r][c] = frame[r][c];
+        c++;
+      }
+    }
+  }
+}
+
+// MM:SS.t, rounded up to the tenth, so a fresh 90 s bomb shows 01:30.0 and
+// the last shown value is 00:00.1.
+void putTime(uint8_t row, unsigned long ms) {
+  unsigned long tenths = (ms + 99) / 100;
+  unsigned long s = tenths / 10;
+  char timeStr[12];
+  snprintf(timeStr, sizeof(timeStr), "%02lu:%02lu.%lu", s / 60, s % 60, tenths % 10);
+  putLine(row, timeStr, true);
+}
+
+void maskedEntry(char *out, size_t outSize) {
+  uint8_t i = 0;
+  for (; i < entryLen && i + 1 < outSize; i++) out[i] = '*';
+  out[i] = '\0';
+}
+
+// Typed digits, with * for the positions still to fill: "1*****", "12****", ...
+void codeEntryLine(uint8_t row, StrId prompt) {
+  if (transientActive()) {
+    putLine(row, transientMsg, true);
+  } else if (entryLen == 0) {
+    putLine(row, tr(prompt), true);
+  } else {
+    char code[CODE_LEN + 1];
+    for (uint8_t i = 0; i < CODE_LEN; i++) code[i] = i < entryLen ? entryBuffer[i] : '*';
+    code[CODE_LEN] = '\0';
+    putLine(row, code, true);
+  }
+}
+
 void renderIdle() {
-  printLine(0, tr(STR_BOMB_SAFE));
-  printLine(1, transientActive() ? transientMsg : tr(STR_ENTER_ARM_CODE));
-  char masked[5];
-  maskedEntry(masked, sizeof(masked));
-  printLine(2, masked);
-  printLine(3, tr(STR_HINT_SETTINGS));
+  putLine(0, tr(STR_TITLE_DISARMED), true);
+  codeEntryLine(1, STR_ENTER_ARM_CODE);
+  putLine(2, "");
+  putLine(3, tr(STR_HINT_SETTINGS));
 }
 
 void renderArmed() {
-  printLine(0, tr(STR_ARMED_TITLE));
-  char timeStr[6];
-  formatMMSS(armedRemainingMs, timeStr, sizeof(timeStr));
-  if (transientActive()) {
-    printLine(1, transientMsg);
+  putLine(0, tr(STR_TITLE_ARMED), true);
+  putTime(1, armedRemainingMs);
+  codeEntryLine(2, STR_ENTER_DEFUSE_CODE);
+  if (finalToneOn) {
+    fillLine(3, BLOCK);
   } else {
-    char line1[LCD_COLS + 1];
-    snprintf(line1, sizeof(line1), tr(STR_TIME_FMT), timeStr);
-    printLine(1, line1);
+    fillLine(3, ' ');
+    frame[3][pendulumPos()] = BLOCK;
   }
-  char masked[5];
-  maskedEntry(masked, sizeof(masked));
-  printLine(2, entryLen > 0 ? masked : tr(STR_ENTER_DEFUSE_CODE));
-  printLine(3, tr(STR_HINT_DEFUSE_CLEAR));
+}
+
+// Bottom row of the end screens: a bar filling up while # is held, the
+// "hold #" hint after a short tap, otherwise the key hint.
+void endScreenHintLine() {
+  if (resetHolding) {
+    unsigned long held = millis() - resetHoldStartMs;
+    if (held > RESET_HOLD_MS) held = RESET_HOLD_MS;
+    fillLine(3, ' ');
+    memset(frame[3], BLOCK, held * LCD_COLS / RESET_HOLD_MS);
+  } else if (transientActive()) {
+    putLine(3, transientMsg);
+  } else {
+    putLine(3, tr(STR_HINT_SETTINGS_RESET));
+  }
 }
 
 void renderDefused() {
-  printLine(0, tr(STR_DEFUSED_TITLE));
-  char timeStr[6];
-  formatMMSS(defusedRemainingMs, timeStr, sizeof(timeStr));
-  char line1[LCD_COLS + 1];
-  snprintf(line1, sizeof(line1), tr(STR_TIME_FMT), timeStr);
-  printLine(1, line1);
-  printLine(2, "");
-  printLine(3, tr(STR_HINT_SETTINGS));
+  putLine(0, tr(STR_TITLE_DEFUSED), true);
+  putTime(1, defusedRemainingMs);
+  putLine(2, "");
+  unsigned long e = millis() - defusedAtMs;
+  if (e < 6 * DEFUSE_BLINK_MS && !resetHolding) {
+    fillLine(3, (e / DEFUSE_BLINK_MS) % 2 == 0 ? BLOCK : ' ');
+  } else {
+    endScreenHintLine();
+  }
 }
 
 void renderExploded() {
-  printLine(0, tr(STR_BOOM_TITLE));
-  printLine(1, tr(STR_BOOM_SUBTITLE));
-  printLine(2, "");
-  printLine(3, tr(STR_HINT_SETTINGS));
+  putLine(0, tr(STR_BOOM_TITLE), true);
+  putLine(1, tr(STR_BOOM_SUBTITLE), true);
+  putLine(2, "");
+  endScreenHintLine();
 }
 
 void renderEnterAdminPin() {
-  printLine(0, tr(STR_ENTER_PIN));
-  char masked[5];
+  putLine(0, tr(STR_ENTER_PIN));
+  char masked[PIN_LEN + 1];
   maskedEntry(masked, sizeof(masked));
-  printLine(1, masked);
-  printLine(2, "");
-  printLine(3, tr(STR_HINT_PIN_CONFIRM_BACK));
+  putLine(1, masked);
+  putLine(2, "");
+  putLine(3, tr(STR_HINT_PIN_CONFIRM_BACK));
 }
 
 void renderMenu() {
-  printLine(0, tr(STR_MENU_LINE0));
-  printLine(1, tr(STR_MENU_LINE1));
-  printLine(2, tr(STR_MENU_LINE2));
-  printLine(3, tr(STR_MENU_LINE3));
+  putLine(0, tr(STR_MENU_LINE0));
+  putLine(1, tr(STR_MENU_LINE1));
+  putLine(2, tr(STR_MENU_LINE2));
+  putLine(3, tr(STR_MENU_LINE3));
 }
 
 void renderSetTime() {
-  printLine(0, tr(STR_SET_TIME_TITLE));
+  putLine(0, tr(STR_SET_TIME_TITLE));
   char range[LCD_COLS + 1];
   snprintf(range, sizeof(range), tr(STR_RANGE_FMT), MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS);
-  printLine(1, range);
-  printLine(2, entryLen > 0 ? entryBuffer : tr(STR_HINT_SAVE_CANCEL));
-  printLine(3, "");
+  putLine(1, range);
+  putLine(2, entryLen > 0 ? entryBuffer : tr(STR_HINT_SAVE_CANCEL));
+  putLine(3, "");
 }
 
-void renderSetArmCode() {
-  printLine(0, tr(STR_SET_ARM_TITLE));
-  printLine(1, tr(STR_ENTER_4_DIGITS));
-  printLine(2, entryBuffer);
-  printLine(3, tr(STR_HINT_SAVE_CANCEL));
-}
-
-void renderSetDefuseCode() {
-  printLine(0, tr(STR_SET_DEFUSE_TITLE));
-  printLine(1, tr(STR_ENTER_4_DIGITS));
-  printLine(2, entryBuffer);
-  printLine(3, tr(STR_HINT_SAVE_CANCEL));
+void renderSetCode(StrId title, StrId prompt, StrId footer = STR_HINT_SAVE_CANCEL) {
+  putLine(0, tr(title));
+  putLine(1, transientActive() ? transientMsg : tr(prompt));
+  putLine(2, entryBuffer);
+  putLine(3, tr(footer));
 }
 
 void render() {
   switch (appState) {
-    case STATE_IDLE:              renderIdle();            break;
-    case STATE_ARMED:              renderArmed();           break;
-    case STATE_DEFUSED:            renderDefused();         break;
-    case STATE_EXPLODED:           renderExploded();        break;
-    case STATE_ENTER_ADMIN_PIN:    renderEnterAdminPin();   break;
-    case STATE_MENU:               renderMenu();            break;
-    case STATE_SET_TIME:           renderSetTime();         break;
-    case STATE_SET_ARM_CODE:       renderSetArmCode();      break;
-    case STATE_SET_DEFUSE_CODE:    renderSetDefuseCode();   break;
+    case STATE_IDLE:              renderIdle();                                        break;
+    case STATE_ARMED:             renderArmed();                                       break;
+    case STATE_DEFUSED:           renderDefused();                                     break;
+    case STATE_EXPLODED:          renderExploded();                                    break;
+    case STATE_ENTER_ADMIN_PIN:   renderEnterAdminPin();                               break;
+    case STATE_MENU:              renderMenu();                                        break;
+    case STATE_SET_TIME:          renderSetTime();                                     break;
+    case STATE_SET_ADMIN_PIN:
+      renderSetCode(STR_SET_PIN_TITLE, STR_ENTER_4_DIGITS, STR_HINT_PIN_CONFIRM_BACK);
+      break;
+    case STATE_CONFIRM_ADMIN_PIN: renderSetCode(STR_CONFIRM_PIN_TITLE, STR_ENTER_4_DIGITS); break;
+    case STATE_SET_ARM_CODE:      renderSetCode(STR_SET_ARM_TITLE, STR_ENTER_6_DIGITS);     break;
+    case STATE_SET_DEFUSE_CODE:   renderSetCode(STR_SET_DEFUSE_TITLE, STR_ENTER_6_DIGITS);  break;
   }
+  flushLcd();
 }
 
 // ---------------------------------------------------------------------------
 // Keypad handling
 // ---------------------------------------------------------------------------
 
+void openSetting(AppState setting) {
+  appState = setting;
+  resetEntry();
+  transientMsg[0] = '\0';
+}
+
 void handleKey(char key) {
+  // After a wrong code the keypad stays locked until the message clears.
+  if ((appState == STATE_IDLE || appState == STATE_ARMED) && transientActive()) return;
+
   switch (appState) {
     case STATE_IDLE:
+    case STATE_ARMED: {
+      bool armed = appState == STATE_ARMED;
       if (isdigit(key)) {
-        if (entryLen < 4) { entryBuffer[entryLen++] = key; entryBuffer[entryLen] = '\0'; lcdNeedsRedraw = true; }
-      } else if (key == '#') {
-        entryBuffer[entryLen] = '\0';
-        bool ok = (entryLen == 4 && strcmp(entryBuffer, armCode) == 0);
-        entryLen = 0;
-        entryBuffer[0] = '\0';
-        if (ok) {
+        if (appendDigit(key, CODE_LEN)) blip(KEY_CLICK_FREQ, KEY_CLICK_MS);
+      } else if (key == '#' && entryLen > 0) { // a stray # with nothing typed is ignored
+        bool ok = entryLen == CODE_LEN && strcmp(entryBuffer, armed ? defuseCode : armCode) == 0;
+        resetEntry();
+        if (ok && armed) {
+          enterDefused();
+        } else if (ok) {
           enterArmed();
         } else {
-          tone(BUZZER_PIN, BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
+          blip(BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
           showTransient(tr(STR_WRONG_CODE));
         }
       } else if (key == '*') {
-        if (entryLen > 0) {
-          entryLen = 0;
-          entryBuffer[0] = '\0';
-          lcdNeedsRedraw = true;
-        } else {
-          enterAdminGate(STATE_IDLE);
-        }
+        if (entryLen > 0 || armed) resetEntry(); // settings are locked while armed
+        else enterAdminGate(STATE_IDLE);
       }
       break;
-
-    case STATE_ARMED:
-      if (isdigit(key)) {
-        if (entryLen < 4) { entryBuffer[entryLen++] = key; entryBuffer[entryLen] = '\0'; lcdNeedsRedraw = true; }
-      } else if (key == '#') {
-        entryBuffer[entryLen] = '\0';
-        bool ok = (entryLen == 4 && strcmp(entryBuffer, defuseCode) == 0);
-        entryLen = 0;
-        entryBuffer[0] = '\0';
-        if (ok) {
-          enterDefused();
-        } else {
-          tone(BUZZER_PIN, BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
-          showTransient(tr(STR_WRONG_CODE));
-        }
-      } else if (key == '*') {
-        entryLen = 0;
-        entryBuffer[0] = '\0';
-        lcdNeedsRedraw = true;
-      }
-      break;
+    }
 
     case STATE_DEFUSED:
-      if (key == '*') enterAdminGate(STATE_DEFUSED);
-      break;
-
     case STATE_EXPLODED:
-      if (key == '*') enterAdminGate(STATE_EXPLODED);
+      if (key == '*') enterAdminGate(appState);
+      else if (key == '#') startResetHold();
       break;
 
     case STATE_ENTER_ADMIN_PIN:
       if (isdigit(key)) {
-        if (entryLen < 4) { entryBuffer[entryLen++] = key; entryBuffer[entryLen] = '\0'; lcdNeedsRedraw = true; }
+        appendDigit(key, PIN_LEN);
       } else if (key == '#') {
-        entryBuffer[entryLen] = '\0';
-        bool ok = (entryLen == 4 && strcmp(entryBuffer, adminPin) == 0);
-        entryLen = 0;
-        entryBuffer[0] = '\0';
+        bool ok = entryLen == PIN_LEN && strcmp(entryBuffer, adminPin) == 0;
+        resetEntry();
+        if (!ok) blip(BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
         appState = ok ? STATE_MENU : returnState;
-        lcdNeedsRedraw = true;
       } else if (key == '*') {
-        entryLen = 0;
-        entryBuffer[0] = '\0';
+        resetEntry();
         appState = returnState;
-        lcdNeedsRedraw = true;
       }
       break;
 
     case STATE_MENU:
       if (key == '1') {
-        appState = STATE_SET_TIME; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
+        openSetting(STATE_SET_TIME);
       } else if (key == '2') {
-        appState = STATE_SET_ARM_CODE; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
+        openSetting(STATE_SET_ADMIN_PIN);
       } else if (key == '3') {
-        appState = STATE_SET_DEFUSE_CODE; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
+        openSetting(STATE_SET_ARM_CODE);
       } else if (key == '4') {
+        openSetting(STATE_SET_DEFUSE_CODE);
+      } else if (key == '5') {
         currentLang = (currentLang == LANG_EN) ? LANG_FI : LANG_EN;
         saveSettings();
-        lcdNeedsRedraw = true;
       } else if (key == '#' || key == '*') {
         saveSettings();
         enterIdle();
@@ -636,39 +786,49 @@ void handleKey(char key) {
 
     case STATE_SET_TIME:
       if (isdigit(key)) {
-        if (entryLen < 3) { entryBuffer[entryLen++] = key; entryBuffer[entryLen] = '\0'; lcdNeedsRedraw = true; }
-      } else if (key == '#') {
-        if (entryLen > 0) {
+        appendDigit(key, 3);
+      } else if (key == '#' || key == '*') {
+        if (key == '#' && entryLen > 0) {
           int seconds = atoi(entryBuffer);
           if (seconds >= MIN_COUNTDOWN_SECONDS && seconds <= MAX_COUNTDOWN_SECONDS) {
             countdownDurationMs = (unsigned long)seconds * 1000UL;
           }
         }
-        appState = STATE_MENU; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
-      } else if (key == '*') {
-        appState = STATE_MENU; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
+        openSetting(STATE_MENU);
+      }
+      break;
+
+    // A new PIN has to be typed twice, since a typo would lock the admin out.
+    case STATE_SET_ADMIN_PIN:
+    case STATE_CONFIRM_ADMIN_PIN:
+      if (isdigit(key)) {
+        appendDigit(key, PIN_LEN);
+      } else if (key == '#' && entryLen == PIN_LEN && appState == STATE_SET_ADMIN_PIN) {
+        memcpy(pendingPin, entryBuffer, PIN_LEN + 1);
+        openSetting(STATE_CONFIRM_ADMIN_PIN);
+      } else if (key == '#' && entryLen == PIN_LEN) {
+        if (strcmp(entryBuffer, pendingPin) == 0) {
+          memcpy(adminPin, pendingPin, PIN_LEN + 1);
+          openSetting(STATE_MENU);
+        } else {
+          openSetting(STATE_SET_ADMIN_PIN);
+          blip(BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
+          showTransient(tr(STR_PIN_MISMATCH));
+        }
+      } else if (key == '#' || key == '*') {
+        openSetting(STATE_MENU);
       }
       break;
 
     case STATE_SET_ARM_CODE:
-      if (isdigit(key)) {
-        if (entryLen < 4) { entryBuffer[entryLen++] = key; entryBuffer[entryLen] = '\0'; lcdNeedsRedraw = true; }
-      } else if (key == '#') {
-        if (entryLen == 4) memcpy(armCode, entryBuffer, 5);
-        appState = STATE_MENU; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
-      } else if (key == '*') {
-        appState = STATE_MENU; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
-      }
-      break;
-
     case STATE_SET_DEFUSE_CODE:
       if (isdigit(key)) {
-        if (entryLen < 4) { entryBuffer[entryLen++] = key; entryBuffer[entryLen] = '\0'; lcdNeedsRedraw = true; }
-      } else if (key == '#') {
-        if (entryLen == 4) memcpy(defuseCode, entryBuffer, 5);
-        appState = STATE_MENU; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
-      } else if (key == '*') {
-        appState = STATE_MENU; entryLen = 0; entryBuffer[0] = '\0'; lcdNeedsRedraw = true;
+        appendDigit(key, CODE_LEN);
+      } else if (key == '#' || key == '*') {
+        if (key == '#' && entryLen == CODE_LEN) {
+          memcpy(appState == STATE_SET_ARM_CODE ? armCode : defuseCode, entryBuffer, CODE_LEN + 1);
+        }
+        openSetting(STATE_MENU);
       }
       break;
   }
@@ -679,16 +839,16 @@ void handleKey(char key) {
 // ---------------------------------------------------------------------------
 
 void setup() {
-  pinMode(LED_A_PIN, OUTPUT);
-  pinMode(LED_B_PIN, OUTPUT);
+  pinMode(LED_RED_PIN, OUTPUT);
+  pinMode(LED_GREEN_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
-  setLeds(false);
 
   loadSettings();
 
   Wire.begin();
   lcd.init();
   lcd.backlight();
+  invalidateLcd();
 
   enterIdle();
 }
@@ -698,24 +858,19 @@ void loop() {
   if (key) {
     handleKey(key);
   }
+  updateResetHold();
 
-  switch (appState) {
-    case STATE_ARMED:    updateArmed();    break;
-    case STATE_EXPLODED: updateExploded(); break;
-    default: break;
-  }
-
+  if (appState == STATE_ARMED) updateArmed();
+  updateSeq();
+  updateLeds();
   updateTransient();
 
   if ((appState == STATE_EXPLODED || appState == STATE_DEFUSED) && millis() >= nextLcdResyncMs) {
     lcd.begin(LCD_COLS, LCD_ROWS); // re-runs the HD44780 init sequence to recover sync
     lcd.backlight();
+    invalidateLcd();
     nextLcdResyncMs = millis() + LCD_RESYNC_MS;
-    lcdNeedsRedraw = true;
   }
 
-  if (lcdNeedsRedraw) {
-    render();
-    lcdNeedsRedraw = false;
-  }
+  render();
 }

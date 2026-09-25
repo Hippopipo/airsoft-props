@@ -18,7 +18,7 @@ Exact pin assignments are defined as named constants at the top of each project'
 
 ## Capture point
 
-**Extra parts:** 2 momentary pushbuttons with built-in LEDs, 16x2 character LCD (parallel-wired, e.g. HD44780).
+**Extra parts:** 2 momentary pushbuttons, 2 small 5 mm LEDs (red for team A, green for team B) with 470 Ω resistors, 16x2 character LCD (parallel-wired, e.g. HD44780).
 
 Two teams each hold their button to capture the point. The LED brightness ramps up as you hold (releasing early resets progress), and the buzzer beeps faster the closer you get. Holding for the full capture time scores a point for that team and flashes the LED. The LCD shows both teams' live scores and capture progress. The first team to reach the configurable goal score (default 5) wins — their LED stays lit, the buzzer plays a victory tone, and further captures are locked out until the scores are reset.
 
@@ -26,11 +26,11 @@ Press `*` to open the PIN-gated settings menu (default PIN `1234`) to adjust the
 
 ## Bomb
 
-**Extra parts:** 2 status LEDs (no buttons — used for feedback only), 20x4 I2C character LCD (e.g. PCF8574 backpack, address `0x27` or `0x3F`).
+**Extra parts:** a red and a green 5 mm LED with 470 Ω resistors (no buttons), 20x4 I2C character LCD (e.g. PCF8574 backpack, address `0x27` or `0x3F`).
 
-An attacker enters the arm code on the keypad and confirms with `#` to start the countdown. While armed, the LEDs flash in sync and the buzzer ticks faster as time runs out. A defender enters the defuse code before time runs out to stop the clock (solid LED + confirmation tone). If the timer reaches zero, the bomb "explodes" (rapid LED flash + alarm siren) until reset.
+An attacker types the 6-digit arming code on the keypad (each key clicks, and the digits replace the `******` placeholders) and confirms with `#` to plant the bomb. A wrong code shows "Wrong code!" and locks the keypad for 3 seconds. The green LED stays lit whenever the bomb isn't counting down. While armed, it behaves like the Counter-Strike C4: a short high beep with a red blink, the gap shrinking from one second to a tenth of a second as time runs out, then a continuous tone with the red LED solid for the final second. A block on the bottom row swings from side to side in time with the beeps, and the timer counts down in tenths of a second (`01:29.9`). A defender enters the disarming code before time runs out to stop the clock (three quick blinks with a rising chirp, green LED back on). If the timer reaches zero, the bomb "explodes": a low rumble with the red LED flickering, after which the red LED stays lit until reset. Set the countdown to 40 seconds to match Counter-Strike's C4 timer.
 
-Press `*` from the safe/defused/exploded screens to open the PIN-gated settings menu (default PIN `1234`) to change the countdown length, arm code, defuse code, or language. Exiting the menu also resets the prop for the next round.
+After a round, hold `#` for two seconds to reset the bomb for the next one; a bar fills along the bottom row while you hold, and a short tap does nothing, so a player can't wipe the result by accident. Press `*` from the disarmed, defused or exploded screen to open the settings menu, protected by a 4-digit admin PIN (default `1234`). From there you can change the countdown length, the admin PIN (typed twice to confirm), the arming code (default `111111`), the disarming code (default `222222`), or the language. Exiting the menu also resets the prop.
 
 ## Language
 
