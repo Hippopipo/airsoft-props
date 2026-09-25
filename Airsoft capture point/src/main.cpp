@@ -69,19 +69,27 @@ const int EEPROM_MAGIC_ADDR = 0;
 const uint8_t EEPROM_MAGIC_VAL = 0xA5;
 const int EEPROM_CAPTURE_TIME_ADDR = 1; // 1 byte: seconds
 const int EEPROM_PIN_ADDR = 2;          // 4 bytes: ASCII digits
-const int EEPROM_LANG_ADDR = 6;         // 1 byte: Lang enum value
+                                        // byte 6 is free (e.g. for a saved language)
 const int EEPROM_GOAL_ADDR = 7;         // 1 byte: goal score
 
 // ---------------------------------------------------------------------------
-// Language / on-screen text
+// On-screen text
 //
-// The HD44780 controller's built-in character ROM doesn't reliably include
-// Finnish ä/ö at normal ASCII positions, so Finnish strings intentionally
-// drop the umlaut dots (e.g. "virittää" -> "virita") rather than risk
-// garbled glyphs on hardware using the common "A00" ROM.
+// All text lives in the STRINGS table, one row per language, so the prop can
+// be translated without touching the rest of the code. To add a language:
+//   1. Add it to the Lang enum, before LANG_COUNT (e.g. LANG_DE).
+//   2. Add a matching row to STRINGS with one string per StrId, in the same
+//      order as the English row. Each must fit the 16-column display, and
+//      the %c / %d / %% placeholders must stay as they are.
+//   3. Set currentLang to the new language.
+// The LCD's built-in character set is ASCII plus Japanese katakana, so
+// letters such as ä, ö, é or ß won't display; they'd need custom characters
+// made with lcd.createChar() (8 slots at most).
+// To switch language from the settings menu instead, add a menu entry that
+// changes currentLang and save it to EEPROM byte 6.
 // ---------------------------------------------------------------------------
 
-enum Lang { LANG_EN, LANG_FI };
+enum Lang { LANG_EN, LANG_COUNT };
 Lang currentLang = LANG_EN;
 
 enum StrId {
@@ -98,34 +106,23 @@ enum StrId {
   STR_COUNT
 };
 
-const char *const STRINGS_EN[STR_COUNT] = {
-  "* for settings",
-  "Capturing %c %3d%%",
-  "Team %c WINS!",
-  "Enter admin PIN:",
-  "1)Time 2)Reset",
-  "3)Goal 4)Lang",
-  "Capture time (s)",
-  "1-60, # to save",
-  "Goal score (pts)",
-  "1-99, # to save"
-};
-
-const char *const STRINGS_FI[STR_COUNT] = {
-  "* asetukset",
-  "Vallataan %c %3d%%",
-  "Tiimi %c voitti!",
-  "Anna PIN-koodi:",
-  "1)Aika 2)Nollaa",
-  "3)Maali 4)Kieli",
-  "Valtausaika (s)",
-  "1-60, # tallenna",
-  "Maalitavoite:",
-  "1-99, # tallenna"
+const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
+  { // LANG_EN
+    "* for settings",
+    "Capturing %c %3d%%",
+    "Team %c WINS!",
+    "Enter admin PIN:",
+    "1)Time 2)Reset",
+    "3)Goal  #=Exit",
+    "Capture time (s)",
+    "1-60, # to save",
+    "Goal score (pts)",
+    "1-99, # to save"
+  }
 };
 
 const char *tr(StrId id) {
-  return (currentLang == LANG_FI) ? STRINGS_FI[id] : STRINGS_EN[id];
+  return STRINGS[currentLang][id];
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +183,6 @@ void saveSettings() {
   for (uint8_t i = 0; i < 4; i++) {
     EEPROM.update(EEPROM_PIN_ADDR + i, adminPin[i]);
   }
-  EEPROM.update(EEPROM_LANG_ADDR, (uint8_t)currentLang);
   EEPROM.update(EEPROM_GOAL_ADDR, (uint8_t)goalScore);
 }
 
@@ -194,7 +190,6 @@ void loadSettings() {
   if (EEPROM.read(EEPROM_MAGIC_ADDR) != EEPROM_MAGIC_VAL) {
     captureTimeMs = DEFAULT_CAPTURE_SECONDS * 1000UL;
     memcpy(adminPin, DEFAULT_PIN, 5);
-    currentLang = LANG_EN;
     goalScore = DEFAULT_GOAL_SCORE;
     saveSettings();
     return;
@@ -211,9 +206,6 @@ void loadSettings() {
     adminPin[i] = (c >= '0' && c <= '9') ? c : DEFAULT_PIN[i];
   }
   adminPin[4] = '\0';
-
-  uint8_t lang = EEPROM.read(EEPROM_LANG_ADDR);
-  currentLang = (lang == LANG_FI) ? LANG_FI : LANG_EN;
 
   uint8_t goal = EEPROM.read(EEPROM_GOAL_ADDR);
   goalScore = (goal >= MIN_GOAL_SCORE && goal <= MAX_GOAL_SCORE) ? goal : DEFAULT_GOAL_SCORE;
@@ -459,10 +451,6 @@ void handleKey(char key) {
         lcdNeedsRedraw = true;
       } else if (key == '3') {
         enterState(STATE_SET_GOAL);
-      } else if (key == '4') {
-        currentLang = (currentLang == LANG_EN) ? LANG_FI : LANG_EN;
-        saveSettings();
-        lcdNeedsRedraw = true;
       } else if (key == '#' || key == '*') {
         enterState(STATE_SCOREBOARD);
       }

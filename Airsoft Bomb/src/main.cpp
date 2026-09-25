@@ -98,18 +98,26 @@ const int EEPROM_COUNTDOWN_ADDR = 1;   // 2 bytes: uint16_t seconds
 const int EEPROM_ARM_CODE_ADDR = 3;    // 6 bytes
 const int EEPROM_DEFUSE_CODE_ADDR = 9; // 6 bytes
 const int EEPROM_ADMIN_PIN_ADDR = 15;  // 4 bytes
-const int EEPROM_LANG_ADDR = 19;       // 1 byte: Lang enum value
+                                       // byte 19 onwards is free (e.g. for a saved language)
 
 // ---------------------------------------------------------------------------
-// Language / on-screen text
+// On-screen text
 //
-// The HD44780 controller's built-in character ROM doesn't reliably include
-// Finnish ä/ö at normal ASCII positions, so Finnish strings intentionally
-// drop the umlaut dots (e.g. "virittää" -> "virita", "räjähti" -> "rajahti")
-// rather than risk garbled glyphs on hardware using the common "A00" ROM.
+// All text lives in the STRINGS table, one row per language, so the prop can
+// be translated without touching the rest of the code. To add a language:
+//   1. Add it to the Lang enum, before LANG_COUNT (e.g. LANG_DE).
+//   2. Add a matching row to STRINGS with one string per StrId, in the same
+//      order as the English row. Each must fit the 20-column display, and
+//      STR_RANGE_FMT must keep its two %d placeholders.
+//   3. Set currentLang to the new language.
+// The LCD's built-in character set is ASCII plus Japanese katakana, so
+// letters such as ä, ö, é or ß won't display; they'd need custom characters
+// made with lcd.createChar() (8 slots at most).
+// To switch language from the settings menu instead, add a menu entry that
+// changes currentLang and save it to EEPROM byte 19.
 // ---------------------------------------------------------------------------
 
-enum Lang { LANG_EN, LANG_FI };
+enum Lang { LANG_EN, LANG_COUNT };
 Lang currentLang = LANG_EN;
 
 enum StrId {
@@ -143,68 +151,40 @@ enum StrId {
   STR_COUNT
 };
 
-const char *const STRINGS_EN[STR_COUNT] = {
-  "** BOMB DISARMED **",
-  "Enter arming code",
-  "Press * for Settings",
-  "*** BOMB ARMED ***",
-  "Enter disarming code",
-  "*** BOMB DEFUSED ***",
-  "!!!!!! BOOM !!!!!!",
-  "The bomb exploded!",
-  "*=Settings  #=Reset",
-  "Enter the admin PIN:",
-  "# = OK   * = Back",
-  "1) Timer  2) PIN",
-  "3) Arming code",
-  "4) Disarming code",
-  "5) Language #/*=Exit",
-  "Set timer (seconds)",
-  "Valid range: %d-%d",
-  "# = Save  * = Cancel",
-  "New arming code:",
-  "New disarming code:",
-  "Enter 6-digit code:",
-  "Wrong code!",
-  "New admin PIN:",
-  "Repeat new PIN:",
-  "Enter 4-digit PIN:",
-  "PINs don't match",
-  "Hold # to reset"
-};
-
-const char *const STRINGS_FI[STR_COUNT] = {
-  "POMMI EI VIRITETTY",
-  "Syota virityskoodi",
-  "Paina * asetuksiin",
-  "* POMMI VIRITETTY *",
-  "Syota purkukoodi",
-  "** POMMI PURETTU **",
-  "!!!!!! PAM !!!!!!",
-  "Pommi on rajahtanyt!",
-  "*=Asetukset #=Nollaa",
-  "Anna PIN-koodi:",
-  "# = OK  * = Takaisin",
-  "1) Ajastin  2) PIN",
-  "3) Virityskoodi",
-  "4) Purkukoodi",
-  "5) Kieli #/*=Poistu",
-  "Aseta ajastin (s)",
-  "Sallittu alue %d-%d",
-  "#=Tallenna *=Peru",
-  "Uusi virityskoodi:",
-  "Uusi purkukoodi:",
-  "Anna 6 numeroa:",
-  "Vaara koodi",
-  "Uusi PIN-koodi:",
-  "Toista PIN-koodi:",
-  "Anna 4 numeroa:",
-  "Koodit eivat tasmaa",
-  "Pida # pohjassa"
+const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
+  { // LANG_EN
+    "** BOMB DISARMED **",
+    "Enter arming code",
+    "Press * for Settings",
+    "*** BOMB ARMED ***",
+    "Enter disarming code",
+    "*** BOMB DEFUSED ***",
+    "!!!!!! BOOM !!!!!!",
+    "The bomb exploded!",
+    "*=Settings  #=Reset",
+    "Enter the admin PIN:",
+    "# = OK   * = Back",
+    "1) Timer  2) PIN",
+    "3) Arming code",
+    "4) Disarming code",
+    "# or * = Exit",
+    "Set timer (seconds)",
+    "Valid range: %d-%d",
+    "# = Save  * = Cancel",
+    "New arming code:",
+    "New disarming code:",
+    "Enter 6-digit code:",
+    "Wrong code!",
+    "New admin PIN:",
+    "Repeat new PIN:",
+    "Enter 4-digit PIN:",
+    "PINs don't match",
+    "Hold # to reset"
+  }
 };
 
 const char *tr(StrId id) {
-  return (currentLang == LANG_FI) ? STRINGS_FI[id] : STRINGS_EN[id];
+  return STRINGS[currentLang][id];
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +266,6 @@ void saveSettings() {
   saveCode(EEPROM_ARM_CODE_ADDR, armCode, CODE_LEN);
   saveCode(EEPROM_DEFUSE_CODE_ADDR, defuseCode, CODE_LEN);
   saveCode(EEPROM_ADMIN_PIN_ADDR, adminPin, PIN_LEN);
-  EEPROM.update(EEPROM_LANG_ADDR, (uint8_t)currentLang);
 }
 
 void loadCode(int addr, char *code, uint8_t len, const char *fallback) {
@@ -303,7 +282,6 @@ void loadSettings() {
     memcpy(armCode, DEFAULT_ARM_CODE, CODE_LEN + 1);
     memcpy(defuseCode, DEFAULT_DEFUSE_CODE, CODE_LEN + 1);
     memcpy(adminPin, DEFAULT_ADMIN_PIN, PIN_LEN + 1);
-    currentLang = LANG_EN;
     saveSettings();
     return;
   }
@@ -318,9 +296,6 @@ void loadSettings() {
   loadCode(EEPROM_ARM_CODE_ADDR, armCode, CODE_LEN, DEFAULT_ARM_CODE);
   loadCode(EEPROM_DEFUSE_CODE_ADDR, defuseCode, CODE_LEN, DEFAULT_DEFUSE_CODE);
   loadCode(EEPROM_ADMIN_PIN_ADDR, adminPin, PIN_LEN, DEFAULT_ADMIN_PIN);
-
-  uint8_t lang = EEPROM.read(EEPROM_LANG_ADDR);
-  currentLang = (lang == LANG_FI) ? LANG_FI : LANG_EN;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +303,7 @@ void loadSettings() {
 // ---------------------------------------------------------------------------
 
 void updateLeds() {
-  bool green = appState != STATE_ARMED && appState != STATE_EXPLODED;
+  bool green = appState != STATE_ARMED;
   bool red = false;
   if (appState == STATE_ARMED) {
     red = finalToneOn || millis() < redFlashUntilMs;
@@ -775,9 +750,6 @@ void handleKey(char key) {
         openSetting(STATE_SET_ARM_CODE);
       } else if (key == '4') {
         openSetting(STATE_SET_DEFUSE_CODE);
-      } else if (key == '5') {
-        currentLang = (currentLang == LANG_EN) ? LANG_FI : LANG_EN;
-        saveSettings();
       } else if (key == '#' || key == '*') {
         saveSettings();
         enterIdle();
