@@ -82,9 +82,9 @@ const Note SEQ_PLANTED[]   = {{2900, 90}, {0, 70}, {2900, 90}};
 const Note SEQ_DEFUSED[]   = {{1800, 120}, {0, 120}, {2400, 120}, {0, 120}, {3200, 300}};
 const Note SEQ_EXPLOSION[] = {{NOISE, 1600}};
 
-// Buzzer/LED switching noise can knock the HD44780 out of 4-bit sync and
-// garble the screen, so the static end screens periodically resync it.
-const unsigned long LCD_RESYNC_MS = 3000;
+// The settings screens (admin PIN entry included) close by themselves after
+// this long without a key press.
+const unsigned long MENU_TIMEOUT_MS = 15000;
 
 const char BLOCK = (char)0xFF; // solid block in the HD44780 character ROM
 
@@ -108,7 +108,7 @@ const int EEPROM_ADMIN_PIN_ADDR = 15;  // 4 bytes
 //   1. Add it to the Lang enum, before LANG_COUNT (e.g. LANG_DE).
 //   2. Add a matching row to STRINGS with one string per StrId, in the same
 //      order as the English row. Each must fit the 20-column display, and
-//      STR_RANGE_FMT must keep its two %d placeholders.
+//      the %d / %s placeholders must stay as they are.
 //   3. Set currentLang to the new language.
 // The LCD's built-in character set is ASCII plus Japanese katakana, so
 // letters such as ä, ö, é or ß won't display; they'd need custom characters
@@ -148,6 +148,8 @@ enum StrId {
   STR_ENTER_4_DIGITS,
   STR_PIN_MISMATCH,
   STR_HOLD_TO_RESET,
+  STR_CURRENT_TIME_FMT,
+  STR_CURRENT_CODE_FMT,
   STR_COUNT
 };
 
@@ -179,7 +181,9 @@ const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "Repeat new PIN:",
     "Enter 4-digit PIN:",
     "PINs don't match",
-    "Hold # to reset"
+    "Hold # to reset",
+    "Current: %d s",
+    "Current: %s"
   }
 };
 
@@ -205,6 +209,7 @@ enum AppState {
   STATE_ARMED,
   STATE_DEFUSED,
   STATE_EXPLODED,
+  // Everything from here on is the settings menu (see updateMenuTimeout).
   STATE_ENTER_ADMIN_PIN,
   STATE_MENU,
   STATE_SET_TIME,
@@ -243,7 +248,7 @@ uint8_t seqIdx = 0;
 unsigned long seqStepEndMs = 0;
 unsigned long nextNoiseMs = 0;
 
-unsigned long nextLcdResyncMs = 0;
+unsigned long lastKeyMs = 0;
 
 // What the screen should show vs. what it currently shows. Only the
 // characters that differ are sent, since a full 4-line rewrite over I2C
@@ -423,7 +428,6 @@ void enterDefused() {
   defusedAtMs = millis();
   finalToneOn = false;
   playSeq(SEQ_DEFUSED);
-  nextLcdResyncMs = millis() + LCD_RESYNC_MS;
 }
 
 void enterExploded() {
@@ -432,7 +436,6 @@ void enterExploded() {
   transientMsg[0] = '\0';
   finalToneOn = false;
   playSeq(SEQ_EXPLOSION);
-  nextLcdResyncMs = millis() + LCD_RESYNC_MS;
 }
 
 void enterAdminGate(AppState from) {
@@ -653,14 +656,28 @@ void renderSetTime() {
   char range[LCD_COLS + 1];
   snprintf(range, sizeof(range), tr(STR_RANGE_FMT), MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS);
   putLine(1, range);
-  putLine(2, entryLen > 0 ? entryBuffer : tr(STR_HINT_SAVE_CANCEL));
-  putLine(3, "");
+  if (entryLen > 0) {
+    putLine(2, entryBuffer);
+  } else {
+    char current[LCD_COLS + 1];
+    snprintf(current, sizeof(current), tr(STR_CURRENT_TIME_FMT), (int)(countdownDurationMs / 1000UL));
+    putLine(2, current);
+  }
+  putLine(3, tr(STR_HINT_SAVE_CANCEL));
 }
 
-void renderSetCode(StrId title, StrId prompt, StrId footer = STR_HINT_SAVE_CANCEL) {
+// `current` is shown until typing starts; the PIN screens pass none.
+void renderSetCode(StrId title, StrId prompt, StrId footer = STR_HINT_SAVE_CANCEL,
+                   const char *current = nullptr) {
   putLine(0, tr(title));
   putLine(1, transientActive() ? transientMsg : tr(prompt));
-  putLine(2, entryBuffer);
+  if (entryLen == 0 && current) {
+    char line[LCD_COLS + 1];
+    snprintf(line, sizeof(line), tr(STR_CURRENT_CODE_FMT), current);
+    putLine(2, line);
+  } else {
+    putLine(2, entryBuffer);
+  }
   putLine(3, tr(footer));
 }
 
@@ -677,8 +694,12 @@ void render() {
       renderSetCode(STR_SET_PIN_TITLE, STR_ENTER_4_DIGITS, STR_HINT_PIN_CONFIRM_BACK);
       break;
     case STATE_CONFIRM_ADMIN_PIN: renderSetCode(STR_CONFIRM_PIN_TITLE, STR_ENTER_4_DIGITS); break;
-    case STATE_SET_ARM_CODE:      renderSetCode(STR_SET_ARM_TITLE, STR_ENTER_6_DIGITS);     break;
-    case STATE_SET_DEFUSE_CODE:   renderSetCode(STR_SET_DEFUSE_TITLE, STR_ENTER_6_DIGITS);  break;
+    case STATE_SET_ARM_CODE:
+      renderSetCode(STR_SET_ARM_TITLE, STR_ENTER_6_DIGITS, STR_HINT_SAVE_CANCEL, armCode);
+      break;
+    case STATE_SET_DEFUSE_CODE:
+      renderSetCode(STR_SET_DEFUSE_TITLE, STR_ENTER_6_DIGITS, STR_HINT_SAVE_CANCEL, defuseCode);
+      break;
   }
   flushLcd();
 }
@@ -691,6 +712,11 @@ void openSetting(AppState setting) {
   appState = setting;
   resetEntry();
   transientMsg[0] = '\0';
+}
+
+void rejectEntry() {
+  blip(BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
+  resetEntry();
 }
 
 void handleKey(char key) {
@@ -756,17 +782,20 @@ void handleKey(char key) {
       }
       break;
 
+    // An invalid entry beeps and is cleared to try again; * leaves unchanged.
     case STATE_SET_TIME:
       if (isdigit(key)) {
         appendDigit(key, 3);
-      } else if (key == '#' || key == '*') {
-        if (key == '#' && entryLen > 0) {
-          int seconds = atoi(entryBuffer);
-          if (seconds >= MIN_COUNTDOWN_SECONDS && seconds <= MAX_COUNTDOWN_SECONDS) {
-            countdownDurationMs = (unsigned long)seconds * 1000UL;
-          }
-        }
+      } else if (key == '*') {
         openSetting(STATE_MENU);
+      } else if (key == '#') {
+        int seconds = atoi(entryBuffer);
+        if (entryLen > 0 && seconds >= MIN_COUNTDOWN_SECONDS && seconds <= MAX_COUNTDOWN_SECONDS) {
+          countdownDurationMs = (unsigned long)seconds * 1000UL;
+          openSetting(STATE_MENU);
+        } else {
+          rejectEntry();
+        }
       }
       break;
 
@@ -787,7 +816,9 @@ void handleKey(char key) {
           blip(BEEP_FREQ_WRONG, BEEP_DURATION_WRONG_MS);
           showTransient(tr(STR_PIN_MISMATCH));
         }
-      } else if (key == '#' || key == '*') {
+      } else if (key == '#') {
+        rejectEntry();
+      } else if (key == '*') {
         openSetting(STATE_MENU);
       }
       break;
@@ -796,13 +827,28 @@ void handleKey(char key) {
     case STATE_SET_DEFUSE_CODE:
       if (isdigit(key)) {
         appendDigit(key, CODE_LEN);
-      } else if (key == '#' || key == '*') {
-        if (key == '#' && entryLen == CODE_LEN) {
-          memcpy(appState == STATE_SET_ARM_CODE ? armCode : defuseCode, entryBuffer, CODE_LEN + 1);
-        }
+      } else if (key == '#' && entryLen == CODE_LEN) {
+        memcpy(appState == STATE_SET_ARM_CODE ? armCode : defuseCode, entryBuffer, CODE_LEN + 1);
+        openSetting(STATE_MENU);
+      } else if (key == '#') {
+        rejectEntry();
+      } else if (key == '*') {
         openSetting(STATE_MENU);
       }
       break;
+  }
+}
+
+// Leaves the settings as if * had been pressed, so an abandoned menu doesn't
+// block the prop. Unsaved typing is dropped; finished changes are kept.
+void updateMenuTimeout() {
+  if (appState < STATE_ENTER_ADMIN_PIN || millis() - lastKeyMs < MENU_TIMEOUT_MS) return;
+  if (appState == STATE_ENTER_ADMIN_PIN) {
+    resetEntry();
+    appState = returnState;
+  } else {
+    saveSettings();
+    enterIdle();
   }
 }
 
@@ -828,6 +874,7 @@ void setup() {
 void loop() {
   char key = keypad.getKey();
   if (key) {
+    lastKeyMs = millis();
     handleKey(key);
   }
   updateResetHold();
@@ -836,13 +883,7 @@ void loop() {
   updateSeq();
   updateLeds();
   updateTransient();
-
-  if ((appState == STATE_EXPLODED || appState == STATE_DEFUSED) && millis() >= nextLcdResyncMs) {
-    lcd.begin(LCD_COLS, LCD_ROWS); // re-runs the HD44780 init sequence to recover sync
-    lcd.backlight();
-    invalidateLcd();
-    nextLcdResyncMs = millis() + LCD_RESYNC_MS;
-  }
+  updateMenuTimeout();
 
   render();
 }

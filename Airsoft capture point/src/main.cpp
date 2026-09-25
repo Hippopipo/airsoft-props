@@ -24,9 +24,9 @@ const uint8_t LED_RED_PIN = 3;
 const uint8_t BTN_YELLOW_PIN = 7;
 const uint8_t LED_YELLOW_PIN = 6;
 
-// Passive buzzer (driven with tone()). Repurposes the Serial TX pin since
-// every other pin is committed to the LCD/keypad/buttons/LEDs — move this if
-// you need Serial debug output during development.
+// Passive buzzer (driven with tone()). Uses the Serial1 TX pin since every
+// other pin is committed to the LCD/keypad/buttons/LEDs. Serial (USB) debug
+// output doesn't use this pin, so it still works.
 const uint8_t BUZZER_PIN = 1;
 
 // 4x4 matrix keypad
@@ -56,9 +56,10 @@ const unsigned long HASH_HOLD_MS = 2000;
 // Screens with several hints on the bottom line cycle through them this often.
 const unsigned long HINT_SWAP_MS = 3000;
 
-// A statistics page (keys B/C/D) goes back to the scoreboard after this long
-// while a game is running. After the game it stays until A is pressed.
-const unsigned long STATS_PAGE_TIMEOUT_MS = 10000;
+// The settings screens (PIN entry included) go back to the scoreboard after
+// this long without a key press, since the buttons don't work while they're
+// open.
+const unsigned long MENU_TIMEOUT_MS = 15000;
 
 // A running game is saved this often, so a power cut loses at most this much.
 // Every capture, the end of a game and a reset are also saved straight away.
@@ -145,6 +146,7 @@ enum StrId {
   STR_SET_POINT_TIME,
   STR_SET_GOAL,
   STR_RANGE_FMT,
+  STR_CURRENT_FMT,
   STR_NEW_GAME,
   STR_YES_NO,
   STR_COUNT
@@ -173,6 +175,7 @@ const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
     "Point every (s)",
     "Goal pts (0=off)",
     "%d-%d, # to save",
+    "Current: %d",
     "Start new game?",
     "# = yes  * = no"
   }
@@ -224,8 +227,8 @@ struct Team {
   StrId name;
   int score = 0;
 
-  // Statistics (keys B/C/D). heldMs and longestMs cover finished spells of
-  // holding the point; the current one is added on top while it lasts.
+  // Statistics (keys B/C/D after the game). heldMs and longestMs are booked
+  // each time a spell of holding the point ends, the game's end included.
   int captures = 0;
   unsigned long heldMs = 0;
   unsigned long longestMs = 0;
@@ -270,7 +273,7 @@ uint8_t entryLen = 0;
 
 enum StatsPage { PAGE_SCORES, PAGE_HELD, PAGE_CAPTURES, PAGE_LONGEST };
 StatsPage page = PAGE_SCORES;
-unsigned long pageShownAtMs = 0;
+unsigned long lastKeyMs = 0;
 
 bool hashHolding = false;
 unsigned long hashHoldStartMs = 0;
@@ -535,19 +538,6 @@ unsigned long remainingMs() {
   }
 }
 
-unsigned long currentStreakMs(const Team &team) {
-  return (phase == PHASE_RUNNING && owner == &team) ? millis() - ownedSinceMs : 0;
-}
-
-unsigned long totalHeldMs(const Team &team) {
-  return team.heldMs + currentStreakMs(team);
-}
-
-unsigned long longestHoldMs(const Team &team) {
-  unsigned long streak = currentStreakMs(team);
-  return streak > team.longestMs ? streak : team.longestMs;
-}
-
 // Books the current owner's spell of holding the point into its statistics.
 void closeStreak() {
   if (!owner) return;
@@ -619,7 +609,10 @@ void updateWarnings() {
   lastWarnSec = sec;
   if (sec == WARN_FIRST_SEC) playSeq(SEQ_WARN_FIRST);
   else if (sec == WARN_SECOND_SEC) playSeq(SEQ_WARN_SECOND);
-  else if (sec > 0 && sec <= COUNTDOWN_SEC) blip(COUNTDOWN_FREQ, COUNTDOWN_MS);
+  else if (sec > 0 && sec <= COUNTDOWN_SEC) {
+    seq = nullptr; // the countdown matters more than a capture tone still playing
+    tone(BUZZER_PIN, COUNTDOWN_FREQ, COUNTDOWN_MS);
+  }
 }
 
 // Runs on every screen, so the clock and the points keep going while an
@@ -864,7 +857,7 @@ void renderStatsPage() {
     if (page == PAGE_CAPTURES) {
       snprintf(value, sizeof(value), "%d", t.captures);
     } else {
-      unsigned long ms = page == PAGE_HELD ? totalHeldMs(t) : longestHoldMs(t);
+      unsigned long ms = page == PAGE_HELD ? t.heldMs : t.longestMs;
       formatMMSS(ms / 1000, value, sizeof(value));
     }
     snprintf(out[i], sizeof(left), "%c %s", tr(t.name)[0], value);
@@ -885,22 +878,21 @@ void renderEnterPin() {
 void renderEditSetting() {
   const NumSetting &s = settings[editing];
   putLine(0, tr(s.title));
+  char line[LCD_COLS + 1];
   if (entryLen > 0) {
     putLine(1, entryBuffer);
+  } else if (hintIndex(2) == 0) {
+    snprintf(line, sizeof(line), tr(STR_CURRENT_FMT), s.value);
+    putLine(1, line);
   } else {
-    char range[LCD_COLS + 1];
-    snprintf(range, sizeof(range), tr(STR_RANGE_FMT), s.minValue, s.maxValue);
-    putLine(1, range);
+    snprintf(line, sizeof(line), tr(STR_RANGE_FMT), s.minValue, s.maxValue);
+    putLine(1, line);
   }
 }
 
 void render() {
   switch (appState) {
     case STATE_SCOREBOARD:
-      // During a game a statistics page falls back to the scores by itself.
-      if (page != PAGE_SCORES && phase != PHASE_OVER && millis() - pageShownAtMs >= STATS_PAGE_TIMEOUT_MS) {
-        page = PAGE_SCORES;
-      }
       if (page == PAGE_SCORES) {
         renderScoreLine();
         renderStatusLine();
@@ -946,9 +938,8 @@ bool appendDigit(char key, uint8_t maxLen) {
 void handleKey(char key) {
   switch (appState) {
     case STATE_SCOREBOARD:
-      if (key >= 'A' && key <= 'D') {
+      if (key >= 'A' && key <= 'D' && phase == PHASE_OVER) {
         page = (StatsPage)(key - 'A');
-        pageShownAtMs = millis();
       } else if (key == '*') {
         cancelHolds();
         hashHolding = false;
@@ -1054,9 +1045,15 @@ void loop() {
 
   char key = keypad.getKey();
   if (key) {
+    lastKeyMs = millis();
     handleKey(key);
   }
   updateHashHold();
+
+  // Settings saved so far are kept; anything half-typed is dropped.
+  if (appState != STATE_SCOREBOARD && millis() - lastKeyMs >= MENU_TIMEOUT_MS) {
+    enterState(STATE_SCOREBOARD);
+  }
 
   updateGame();
   updateSeq();
