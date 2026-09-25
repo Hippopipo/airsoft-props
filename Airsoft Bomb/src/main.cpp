@@ -65,6 +65,10 @@ const unsigned long ALARM_TOGGLE_MS = 150;
 
 const unsigned long TRANSIENT_MSG_MS = 1200; // how long "Wrong code" etc. stays up
 
+// Buzzer/LED switching noise can knock the HD44780 out of 4-bit sync and
+// garble the screen, so the static end screens periodically resync it.
+const unsigned long LCD_RESYNC_MS = 3000;
+
 // ---------------------------------------------------------------------------
 // EEPROM layout
 // ---------------------------------------------------------------------------
@@ -219,6 +223,8 @@ bool ledFlashOn = false;
 unsigned long nextAlarmToggleMs = 0;
 bool alarmToneHigh = false;
 
+unsigned long nextLcdResyncMs = 0;
+
 // ---------------------------------------------------------------------------
 // EEPROM helpers
 // ---------------------------------------------------------------------------
@@ -360,6 +366,7 @@ void enterDefused() {
   defusedRemainingMs = armedRemainingMs;
   setLeds(true);
   tone(BUZZER_PIN, BEEP_FREQ_DEFUSED_CONFIRM, BEEP_DURATION_CONFIRM_MS);
+  nextLcdResyncMs = millis() + LCD_RESYNC_MS;
   lcdNeedsRedraw = true;
 }
 
@@ -371,10 +378,12 @@ void enterExploded() {
   alarmToneHigh = false;
   ledFlashOn = false;
   ledFlashToggleMs = millis();
+  nextLcdResyncMs = millis() + LCD_RESYNC_MS;
   lcdNeedsRedraw = true;
 }
 
 void enterAdminGate(AppState from) {
+  noTone(BUZZER_PIN); // the explosion siren is an untimed tone and would otherwise play on through the menu
   returnState = from;
   appState = STATE_ENTER_ADMIN_PIN;
   entryLen = 0;
@@ -697,6 +706,13 @@ void loop() {
   }
 
   updateTransient();
+
+  if ((appState == STATE_EXPLODED || appState == STATE_DEFUSED) && millis() >= nextLcdResyncMs) {
+    lcd.begin(LCD_COLS, LCD_ROWS); // re-runs the HD44780 init sequence to recover sync
+    lcd.backlight();
+    nextLcdResyncMs = millis() + LCD_RESYNC_MS;
+    lcdNeedsRedraw = true;
+  }
 
   if (lcdNeedsRedraw) {
     render();

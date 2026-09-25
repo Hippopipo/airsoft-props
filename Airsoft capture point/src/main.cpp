@@ -223,9 +223,23 @@ void loadSettings() {
 // Team / capture logic
 // ---------------------------------------------------------------------------
 
+// A hold is only valid while the scoreboard is live; a stale one would count
+// the whole time away as hold time and score instantly on return.
+void cancelHolds() {
+  Team *teams[] = {&teamA, &teamB};
+  for (Team *t : teams) {
+    if (t->holding) {
+      t->holding = false;
+      analogWrite(t->ledPin, 0);
+    }
+  }
+}
+
 void resetScores() {
   teamA.score = 0;
   teamB.score = 0;
+  teamA.holding = teamB.holding = false;
+  teamA.flashing = teamB.flashing = false;
   gameOver = false;
   winnerLetter = '\0';
   analogWrite(teamA.ledPin, 0);
@@ -287,6 +301,7 @@ void updateCapture(Team &team) {
       if (team.score >= goalScore) {
         gameOver = true;
         winnerLetter = (&team == &teamA) ? 'A' : 'B';
+        cancelHolds();
         tone(BUZZER_PIN, BEEP_FREQ_WIN, BEEP_DURATION_WIN_MS);
       } else {
         tone(BUZZER_PIN, BEEP_FREQ_CAPTURED, BEEP_DURATION_CAPTURED_MS);
@@ -415,6 +430,7 @@ void handleKey(char key) {
   switch (appState) {
     case STATE_SCOREBOARD:
       if (key == '*') {
+        cancelHolds();
         enterState(STATE_ENTER_PIN);
       }
       break;
