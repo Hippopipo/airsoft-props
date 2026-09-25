@@ -15,11 +15,11 @@ const uint8_t LCD_D5 = A3;
 const uint8_t LCD_D6 = A4;
 const uint8_t LCD_D7 = A5;
 
-// Team A / Team B buttons + LEDs (LEDs must be PWM-capable pins)
-const uint8_t BTN_A_PIN = 2;
-const uint8_t LED_A_PIN = 3;
-const uint8_t BTN_B_PIN = 7;
-const uint8_t LED_B_PIN = 6;
+// Red team / yellow team buttons + LEDs (LEDs must be PWM-capable pins)
+const uint8_t BTN_RED_PIN = 2;
+const uint8_t LED_RED_PIN = 3;
+const uint8_t BTN_YELLOW_PIN = 7;
+const uint8_t LED_YELLOW_PIN = 6;
 
 // Passive buzzer (driven with tone()). Repurposes the Serial TX pin since
 // every other pin is committed to the LCD/keypad/buttons/LEDs — move this if
@@ -80,7 +80,9 @@ const int EEPROM_GOAL_ADDR = 7;         // 1 byte: goal score
 //   1. Add it to the Lang enum, before LANG_COUNT (e.g. LANG_DE).
 //   2. Add a matching row to STRINGS with one string per StrId, in the same
 //      order as the English row. Each must fit the 16-column display, and
-//      the %c / %d / %% placeholders must stay as they are.
+//      the %s / %d / %% placeholders must stay as they are. The scoreboard
+//      needs both team names plus their scores on one line, so keep the
+//      names short (together at most 10 characters).
 //   3. Set currentLang to the new language.
 // The LCD's built-in character set is ASCII plus Japanese katakana, so
 // letters such as ä, ö, é or ß won't display; they'd need custom characters
@@ -93,6 +95,8 @@ enum Lang { LANG_EN, LANG_COUNT };
 Lang currentLang = LANG_EN;
 
 enum StrId {
+  STR_TEAM_RED,
+  STR_TEAM_YELLOW,
   STR_HINT_SETTINGS,
   STR_CAPTURING_FMT,
   STR_WIN_FMT,
@@ -108,9 +112,11 @@ enum StrId {
 
 const char *const STRINGS[LANG_COUNT][STR_COUNT] = {
   { // LANG_EN
+    "Red",
+    "Yellow",
     "* for settings",
-    "Capturing %c %3d%%",
-    "Team %c WINS!",
+    "%s: %d%%",
+    "%s wins!",
     "Enter admin PIN:",
     "1)Time 2)Reset",
     "3)Goal  #=Exit",
@@ -136,12 +142,10 @@ unsigned long captureTimeMs = DEFAULT_CAPTURE_SECONDS * 1000UL;
 char adminPin[5] = "1234"; // 4 digits + null terminator
 int goalScore = DEFAULT_GOAL_SCORE;
 
-bool gameOver = false;
-char winnerLetter = '\0';
-
 struct Team {
   uint8_t buttonPin;
   uint8_t ledPin;
+  StrId name;
   int score = 0;
 
   bool rawState = HIGH;      // last raw button reading (active LOW)
@@ -155,8 +159,11 @@ struct Team {
   unsigned long flashUntilMs = 0;
 };
 
-Team teamA = {BTN_A_PIN, LED_A_PIN};
-Team teamB = {BTN_B_PIN, LED_B_PIN};
+Team teamRed = {BTN_RED_PIN, LED_RED_PIN, STR_TEAM_RED};
+Team teamYellow = {BTN_YELLOW_PIN, LED_YELLOW_PIN, STR_TEAM_YELLOW};
+
+bool gameOver = false;
+const Team *winner = nullptr;
 
 enum AppState {
   STATE_SCOREBOARD,
@@ -218,7 +225,7 @@ void loadSettings() {
 // A hold is only valid while the scoreboard is live; a stale one would count
 // the whole time away as hold time and score instantly on return.
 void cancelHolds() {
-  Team *teams[] = {&teamA, &teamB};
+  Team *teams[] = {&teamRed, &teamYellow};
   for (Team *t : teams) {
     if (t->holding) {
       t->holding = false;
@@ -228,14 +235,14 @@ void cancelHolds() {
 }
 
 void resetScores() {
-  teamA.score = 0;
-  teamB.score = 0;
-  teamA.holding = teamB.holding = false;
-  teamA.flashing = teamB.flashing = false;
+  teamRed.score = 0;
+  teamYellow.score = 0;
+  teamRed.holding = teamYellow.holding = false;
+  teamRed.flashing = teamYellow.flashing = false;
   gameOver = false;
-  winnerLetter = '\0';
-  analogWrite(teamA.ledPin, 0);
-  analogWrite(teamB.ledPin, 0);
+  winner = nullptr;
+  analogWrite(teamRed.ledPin, 0);
+  analogWrite(teamYellow.ledPin, 0);
 }
 
 // Reads + debounces a team's button, returns true if pressed (active LOW).
@@ -292,7 +299,7 @@ void updateCapture(Team &team) {
 
       if (team.score >= goalScore) {
         gameOver = true;
-        winnerLetter = (&team == &teamA) ? 'A' : 'B';
+        winner = &team;
         cancelHolds();
         tone(BUZZER_PIN, BEEP_FREQ_WIN, BEEP_DURATION_WIN_MS);
       } else {
@@ -309,12 +316,12 @@ void updateCapture(Team &team) {
 // capturing (repeating beep, faster as progress increases).
 void updateProgressBuzzer() {
   Team *active = nullptr;
-  if (teamA.holding && teamB.holding) {
-    active = (captureProgressPercent(teamA) >= captureProgressPercent(teamB)) ? &teamA : &teamB;
-  } else if (teamA.holding) {
-    active = &teamA;
-  } else if (teamB.holding) {
-    active = &teamB;
+  if (teamRed.holding && teamYellow.holding) {
+    active = (captureProgressPercent(teamRed) >= captureProgressPercent(teamYellow)) ? &teamRed : &teamYellow;
+  } else if (teamRed.holding) {
+    active = &teamRed;
+  } else if (teamYellow.holding) {
+    active = &teamYellow;
   }
 
   if (active == nullptr) {
@@ -341,23 +348,29 @@ void printPadded(const char *text, uint8_t width) {
 }
 
 void renderScoreboard() {
-  char line1[17];
-  snprintf(line1, sizeof(line1), "A:%-3d    B:%-3d", teamA.score, teamB.score);
+  // Red's score on the left, yellow's on the right: "Red:2    Yellow:3"
+  char left[17], right[17], line1[17];
+  snprintf(left, sizeof(left), "%s:%d", tr(teamRed.name), teamRed.score);
+  snprintf(right, sizeof(right), "%s:%d", tr(teamYellow.name), teamYellow.score);
+  int gap = 16 - (int)strlen(left) - (int)strlen(right);
+  snprintf(line1, sizeof(line1), "%s%*s%s", left, gap > 1 ? gap : 1, "", right);
   lcd.setCursor(0, 0);
   printPadded(line1, 16);
 
   char line2[17];
   if (gameOver) {
-    snprintf(line2, sizeof(line2), tr(STR_WIN_FMT), winnerLetter);
+    snprintf(line2, sizeof(line2), tr(STR_WIN_FMT), tr(winner->name));
   } else {
-    int progA = captureProgressPercent(teamA);
-    int progB = captureProgressPercent(teamB);
-    if (progA > 0 && progB > 0) {
-      snprintf(line2, sizeof(line2), "A:%3d%% B:%3d%%", progA, progB);
-    } else if (progA > 0) {
-      snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), 'A', progA);
-    } else if (progB > 0) {
-      snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), 'B', progB);
+    int progRed = captureProgressPercent(teamRed);
+    int progYellow = captureProgressPercent(teamYellow);
+    if (progRed > 0 && progYellow > 0) {
+      // Both holding: only the names' first letters fit, e.g. "R: 42%  Y: 17%"
+      snprintf(line2, sizeof(line2), "%c:%3d%%  %c:%3d%%",
+               tr(teamRed.name)[0], progRed, tr(teamYellow.name)[0], progYellow);
+    } else if (progRed > 0) {
+      snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), tr(teamRed.name), progRed);
+    } else if (progYellow > 0) {
+      snprintf(line2, sizeof(line2), tr(STR_CAPTURING_FMT), tr(teamYellow.name), progYellow);
     } else {
       snprintf(line2, sizeof(line2), "%s", tr(STR_HINT_SETTINGS));
     }
@@ -501,30 +514,30 @@ void handleKey(char key) {
 // ---------------------------------------------------------------------------
 
 void setup() {
-  pinMode(BTN_A_PIN, INPUT_PULLUP);
-  pinMode(BTN_B_PIN, INPUT_PULLUP);
-  pinMode(LED_A_PIN, OUTPUT);
-  pinMode(LED_B_PIN, OUTPUT);
+  pinMode(BTN_RED_PIN, INPUT_PULLUP);
+  pinMode(BTN_YELLOW_PIN, INPUT_PULLUP);
+  pinMode(LED_RED_PIN, OUTPUT);
+  pinMode(LED_YELLOW_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
 
   loadSettings();
 
   lcd.begin(16, 2);
 
-  teamA.rawState = teamA.debouncedState = digitalRead(BTN_A_PIN);
-  teamB.rawState = teamB.debouncedState = digitalRead(BTN_B_PIN);
+  teamRed.rawState = teamRed.debouncedState = digitalRead(BTN_RED_PIN);
+  teamYellow.rawState = teamYellow.debouncedState = digitalRead(BTN_YELLOW_PIN);
 }
 
 void loop() {
-  updateButton(teamA);
-  updateButton(teamB);
+  updateButton(teamRed);
+  updateButton(teamYellow);
 
   // Only track capture progress on the main scoreboard screen — settings
   // menu interaction takes priority over gameplay input. Once a team has
   // hit the goal score, gameplay is frozen until a reset.
   if (appState == STATE_SCOREBOARD && !gameOver) {
-    updateCapture(teamA);
-    updateCapture(teamB);
+    updateCapture(teamRed);
+    updateCapture(teamYellow);
     updateProgressBuzzer();
   }
 
@@ -540,7 +553,7 @@ void loop() {
 
   // Scoreboard screen redraws continuously to keep the live progress
   // percentage current while a team is holding.
-  if (appState == STATE_SCOREBOARD && (teamA.holding || teamB.holding)) {
+  if (appState == STATE_SCOREBOARD && (teamRed.holding || teamYellow.holding)) {
     render();
   }
 }

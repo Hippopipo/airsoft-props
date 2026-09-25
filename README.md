@@ -18,9 +18,9 @@ Exact pin assignments are defined as named constants at the top of each project'
 
 ## Capture point
 
-**Extra parts:** 2 momentary pushbuttons, 2 small 5 mm LEDs (red for team A, green for team B) with 470 Ω resistors, 16x2 character LCD (parallel-wired, e.g. HD44780).
+**Extra parts:** 2 momentary pushbuttons (one red, one yellow), 2 small 5 mm LEDs (red and yellow) with 470 Ω resistors, 16x2 character LCD (parallel-wired, e.g. HD44780).
 
-Two teams each hold their button to capture the point. The LED brightness ramps up as you hold (releasing early resets progress), and the buzzer beeps faster the closer you get. Holding for the full capture time scores a point for that team and flashes the LED. The LCD shows both teams' live scores and capture progress. The first team to reach the configurable goal score (default 5) wins — their LED stays lit, the buzzer plays a victory tone, and further captures are locked out until the scores are reset.
+Two teams, Red and Yellow, each hold their own coloured button to capture the point. The LED brightness ramps up as you hold (releasing early resets progress), and the buzzer beeps faster the closer you get. Holding for the full capture time scores a point for that team and flashes the LED. The LCD shows both teams' live scores and capture progress. The first team to reach the configurable goal score (default 5) wins — their LED stays lit, the buzzer plays a victory tone, and further captures are locked out until the scores are reset.
 
 Press `*` to open the PIN-gated settings menu (default PIN `1234`) to adjust the capture time or the goal score, or to reset the scores.
 
